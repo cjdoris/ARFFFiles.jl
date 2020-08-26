@@ -46,7 +46,7 @@ transformer(n, c, ::MatchRule{:attribute})         = :attribute => (c[1], c[2])
 transformer(n, c, ::MatchRule{:datastart})         = :datastart => nothing
 transformer(n, c, ::MatchRule{:type_numeric})      = :numeric => nothing
 transformer(n, c, ::MatchRule{:type_string})       = :string => nothing
-transformer(n, c, ::MatchRule{:type_date})         = :date => (isempty(c) ? nothing : n.children[1].children[1].value)
+transformer(n, c, ::MatchRule{:type_date})         = :date => (isempty(c) ? nothing : c[1].children[1])
 transformer(n, c, ::MatchRule{:type_nominal})      = :nominal => pushfirst!(c[2], c[1])
 transformer(n, c, ::MatchRule{:type_nominal_end})  = String[]
 transformer(n, c, ::MatchRule{:type_nominal_more}) = pushfirst!(c[2], c[1])
@@ -110,7 +110,7 @@ abstract type ARFFType end
 parse_entry(::Type{T}, ::Any, ::Missing) where {T>:Missing} = missing
 parse_entry(::Type{T}, ::Nothing, x::String) where {T>:String} = x
 parse_entry(::Type{T}, ::Nothing, x::String) where {T>:Float64} = parse(Float64, x)
-parse_entry(::Type{T}, fmt::String, x::String) where {T>:Date} = DateTime(x, fmt)
+parse_entry(::Type{T}, fmt::DateFormat, x::String) where {T>:DateTime} = DateTime(x, fmt)
 parse_entry(::Type{T}, p::CategoricalPool{String,Int32}, x::String) where {T>:CategoricalValue{String,Int32}} = p[get(p, x)]
 
 struct ARFFNumericType <: ARFFType end
@@ -119,7 +119,7 @@ typeandparser(t::ARFFNumericType) = Float64, nothing
 struct ARFFDateType <: ARFFType
     format :: String
 end
-typeandparser(t::ARFFDateType) = Date, t.format
+typeandparser(t::ARFFDateType) = DateTime, DateFormat(replace(t.format, r"." => c -> c=="M" ? "m" : c=="m" ? "M" : c=="s" ? "S" : c))
 
 struct ARFFStringType <: ARFFType end
 typeandparser(t::ARFFStringType) = String, nothing
