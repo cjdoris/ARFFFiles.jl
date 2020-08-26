@@ -1,0 +1,11 @@
+name = "ARFFFiles"
+uuid = "da404889-ca92-49ff-9e8b-0aa6b4d38dc8"
+authors = ["Christopher Doris <github.com/cjdoris>"]
+version = "0.1.0"
+
+[deps]
+CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+StringParserPEG = "b0c8ea40-1aeb-11ea-0927-b51424bf2dfe"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
