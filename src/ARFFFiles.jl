@@ -1,111 +1,40 @@
 module ARFFFiles
 
-using StringParserPEG, Dates, Tables, CategoricalArrays, FileIO
+using Dates, Tables, CategoricalArrays, FileIO
 
-const GRAMMAR = Grammar("""
-header_line => ( -(space) & (comment | relation | attribute | datastart | blank) ) {"header_line"}
-
-blank => ( space & space ) {"blank"}
-comment => ( r(%.*)r ) {"comment"}
-relation => ( -('@relation' | '@RELATION') & -(space) & string & -(space)) {"relation"}
-attribute => ( -('@attribute' | '@ATTRIBUTE') & -(space) & string & -(space) & type & -(space)) {"attribute"}
-datastart => ( ('@data' | '@DATA') & space ) {"datastart"}
-
-type => type_numeric | type_string | type_date | type_nominal
-
-type_numeric => ( ('numeric' | 'NUMERIC' | 'integer' | 'INTEGER' | 'real' | 'REAL') & space) {"type_numeric"}
-type_string => ( ('string' | 'STRING') & space ) {"type_string"}
-type_date => ( -('date' | 'DATE') & -(space) & ?(string) ) {"type_date"}
-type_nominal => ( -('{') & -(space) & string & -(space) & (type_nominal_end | type_nominal_more) ) {"type_nominal"}
-type_nominal_end => ( '}' & space ) {"type_nominal_end"}
-type_nominal_more => ( -(',') & -(space) & string & -(space) & (type_nominal_end | type_nominal_more) ) {"type_nominal_more"}
-
-data_line => ( -(space) & (row | comment | blank)) {"data_line"}
-
-row => (-(space) & datum & -(space) & ?(row_more)) {"row"}
-row_more => ( -(',') & -(space) & datum & -(space) & ?(row_more) ) {"row_more"}
-datum => missing | string
-missing => (rstring & space) {"missing"}
-
-string => ( sstring | dstring | rstring )
-sstring => ( -('''') & r([^\\']*)r & -('''') ) {"sstring"}
-dstring => ( -('"') & r([^\\"]*)r & -('"') ) {"dstring"}
-rstring => r([^ \t\\'",{}@]+)r {"rstring"}
-space => r([ \t]*)r
-""")
-
-parse_header_line(line) = parse(GRAMMAR, line, start=:header_line)
-
-parse_data_line(line) = parse(GRAMMAR, line, start=:data_line)
-
-transformer(n, c, ::MatchRule{:header_line})       = c[1]
-transformer(n, c, ::MatchRule{:blank})             = :blank => nothing
-transformer(n, c, ::MatchRule{:comment})           = :comment => n.value[2:end]
-transformer(n, c, ::MatchRule{:relation})          = :relation => c[1]
-transformer(n, c, ::MatchRule{:attribute})         = :attribute => (c[1], c[2])
-transformer(n, c, ::MatchRule{:datastart})         = :datastart => nothing
-transformer(n, c, ::MatchRule{:type_numeric})      = :numeric => nothing
-transformer(n, c, ::MatchRule{:type_string})       = :string => nothing
-transformer(n, c, ::MatchRule{:type_date})         = :date => (isempty(c) ? nothing : c[1].children[1])
-transformer(n, c, ::MatchRule{:type_nominal})      = :nominal => pushfirst!(c[2], c[1])
-transformer(n, c, ::MatchRule{:type_nominal_end})  = String[]
-transformer(n, c, ::MatchRule{:type_nominal_more}) = pushfirst!(c[2], c[1])
-transformer(n, c, ::MatchRule{:data_line})         = c[1]
-transformer(n, c, ::MatchRule{:row})               = :row => (length(c)==1 ? Union{String,Missing}[c[1]] : pushfirst!(c[2].children[1], c[1]))
-transformer(n, c, ::MatchRule{:row_more})          = length(c)==1 ? Union{String,Missing}[c[1]] : pushfirst!(c[2].children[1], c[1])
-transformer(n, c, ::MatchRule{:missing})           = c[1] == "?" ? missing : c[1]
-transformer(n, c, ::MatchRule{:sstring})           = c[1].value
-transformer(n, c, ::MatchRule{:dstring})           = c[1].value
-transformer(n, c, ::MatchRule{:rstring})           = n.value
-
-transform_line(ast) = transform(transformer, ast)
+# TODO: Move the parser into this package
+import FastParsers
+import FastParsers.Examples.ARFF: ARFFType, NumericType, StringType, DateType, NominalType, HeaderEntry, DataStart, Attribute, Relation
 
 function parse_header(io::IO)
     comments = String[]
     relation = missing
-    attributes = ARFFAttribute[]
-    relation_comments = String[]
+    attributes = Attribute[]
     lineno = 1
     while !eof(io)
-        ast, pos, err = parse_header_line(readline(io))
-        err === nothing || return (nothing, lineno, pos, err)
-        k, x = transform_line(ast)
-        if k == :blank
-            # ignore
-        elseif k == :comment
-            push!(comments, x)
-        elseif k == :relation
-            relation === missing || return (nothing, lineno, pos, Meta.ParseError("relation seen twice"))
-            relation = x
-            relation_comments = copy(comments)
+        r, i = FastParsers.parse(FastParsers.Examples.ARFF.header_line, readline(io), 1, onfail=(s,i)->nothing)
+        r===nothing && return (nothing, lineno, i, Meta.ParseError("invalid syntax"))
+        h, c = r
+        c === nothing || push!(comments, c)
+        if h === nothing
+            # blank line
+        elseif h isa Relation
+            relation === missing || return (nothing, lineno, i, Meta.ParseError("relation seen twice"))
+            relation = h.name
             empty!(comments)
-        elseif k == :attribute
-            relation === missing && return (nothing, lineno, pos, Meta.ParseError("relation required before @attribute"))
-            name, (t, y) = x
-            if t == :numeric
-                type = ARFFNumericType()
-            elseif t == :string
-                type = ARFFStringType()
-            elseif t == :date
-                type = ARFFDateType(y)
-            elseif t == :nominal
-                type = ARFFNominalType(y)
-            else
-                error()
-            end
-            push!(attributes, ARFFAttribute(name, type, copy(comments)))
-            empty!(comments)
-        elseif k == :datastart
-            relation === missing && return (nothing, pos, Meta.ParseError("relation required before @data"))
-            return (ARFFHeader(relation, attributes, relation_comments, comments), lineno, pos, nothing)
+        elseif h isa Attribute
+            relation === missing && return (nothing, lineno, i, Meta.ParseError("relation required before @attribute"))
+            push!(attributes, h)
+        elseif h isa DataStart
+            relation === missing && return (nothing, lineno, i, Meta.ParseError("relation required before @data"))
+            return (Header(relation, attributes, comments), lineno, i, nothing)
         else
             error()
         end
+        lineno += 1
     end
     return (nothing, lineno, 0, Meta.ParseError("reached end of file"))
 end
-
-abstract type ARFFType end
 
 parse_entry(::Type{T}, ::Any, ::Missing) where {T>:Missing} = missing
 parse_entry(::Type{T}, ::Nothing, x::String) where {T>:String} = x
@@ -113,39 +42,21 @@ parse_entry(::Type{T}, ::Nothing, x::String) where {T>:Float64} = parse(Float64,
 parse_entry(::Type{T}, fmt::DateFormat, x::String) where {T>:DateTime} = DateTime(x, fmt)
 parse_entry(::Type{T}, p::CategoricalPool{String,Int32}, x::String) where {T>:CategoricalValue{String,Int32}} = p[get(p, x)]
 
-struct ARFFNumericType <: ARFFType end
-typeandparser(t::ARFFNumericType) = Float64, nothing
+typeandparser(::NumericType) = Float64, nothing
+typeandparser(t::DateType) = DateTime, DateFormat(replace(t.format, r"." => c -> c=="M" ? "m" : c=="m" ? "M" : c=="s" ? "S" : c))
+typeandparser(::StringType) = String, nothing
+typeandparser(t::NominalType) = CategoricalValue{String,Int32}, CategoricalPool{String,Int32}(t.classes)
 
-struct ARFFDateType <: ARFFType
-    format :: String
-end
-typeandparser(t::ARFFDateType) = DateTime, DateFormat(replace(t.format, r"." => c -> c=="M" ? "m" : c=="m" ? "M" : c=="s" ? "S" : c))
-
-struct ARFFStringType <: ARFFType end
-typeandparser(t::ARFFStringType) = String, nothing
-
-struct ARFFNominalType <: ARFFType
-    values :: Vector{String}
-end
-typeandparser(t::ARFFNominalType) = CategoricalValue{String,Int32}, CategoricalPool{String,Int32}(t.values)
-
-struct ARFFAttribute
-    name :: String
-    type :: ARFFType
-    comments :: Vector{String}
-end
-
-struct ARFFHeader
+struct Header
     relation :: String
-    attributes :: Vector{ARFFAttribute}
-    relation_comments :: Vector{String}
-    data_comments :: Vector{String}
+    attributes :: Vector{Attribute}
+    comments :: Vector{String}
 end
 
 struct ARFFReader{names, types, Parsers}
     io :: IO
     own_io :: Bool
-    header :: ARFFHeader
+    header :: Header
     parsers :: Parsers
 end
 
@@ -161,7 +72,7 @@ function loadstreaming(io::IO, own::Bool=false; opts...)
     loadstreaming(io, own, header; opts...)
 end
 
-function loadstreaming(io::IO, own::Bool, header::ARFFHeader; missingcols=true)
+function loadstreaming(io::IO, own::Bool, header::Header; missingcols=true)
     missingcols =
         missingcols === true ? c->true :
         missingcols === false ? c->false :
@@ -189,35 +100,26 @@ load(f::Base.Callable, args...; opts...) = thenclose(f, loadstreaming(args...; o
 load_header(fn::Union{IO,AbstractString}, args...; opts...) = load(r->r.header, fn, args...; opts...)
 load(fn::Union{IO,AbstractString}, args...; opts...) = load(read, fn, args...; opts...)
 
-function thenclose(f, r::ARFFReader)
-    z = try
+thenclose(f, r::ARFFReader) =
+    try
         f(r)
-    catch
+    finally
         close(r)
-        rethrow()
     end
-    close(r)
-    return z
-end
 
 function nextrow(r::ARFFReader{names, types, P}) where {names, types, P<:Tuple}
     N = length(P.parameters)
     while !eof(r.io)
-        ast, pos, err = parse_data_line(readline(r.io))
-        err === nothing || throw(err)
-        k, x = transform_line(ast)
-        k :: Symbol
-        if k == :row
-            x :: Vector{Union{String,Missing}}
-            length(x) == N || error("expected $N fields, found $(length(x))")
+        p, i = FastParsers.parse(FastParsers.Examples.ARFF.data_line, readline(r.io), 1, onfail=(s,i)->nothing)
+        p===nothing && throw(Meta.ParseError("parsing error"))
+        x, c = p
+        if length(x) == N
             row = ntuple(Val(N)) do i
                 parse_entry(types.parameters[i], r.parsers[i], x[i])
             end :: types
             return NamedTuple{names, types}(row)
-        elseif k in (:blank, :comment)
-            continue
-        else
-            error()
+        elseif !(isempty(x))
+            error("expected $N fields, found $(length(x))")
         end
     end
     nothing
