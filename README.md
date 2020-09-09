@@ -1,6 +1,6 @@
 # ARFFFiles.jl
 
-Load and save ARFF formatted files.
+Load and save [ARFF (Attribute Relation File Format)](https://waikato.github.io/weka-wiki/formats_and_processing/arff/) files.
 
 Integrated into `Tables.jl` (for easily converting to your favourite table type) and `FileIO.jl` (for generic file loading).
 
