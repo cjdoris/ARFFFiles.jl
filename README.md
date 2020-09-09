@@ -26,7 +26,7 @@ Replace `DataFrame` with your favourite table type.
     - `close(r)` closes the underlying io stream, unless `own=false`.
     - `r` satisfies the `Tables.jl` interface, so can be materialized as a table.
 
-**Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}`.
+**Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)).
 
 **Missing data.** By default we assume all columns can contain missing data (`?`).
 Option `missingcols` to the above functions controls this behaviour, it can be `true`, `false`,
