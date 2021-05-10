@@ -483,7 +483,12 @@ function nextrow(r::ARFFReader{names, types, P}) where {names, types, P<:Tuple}
     N = length(P.parameters)
     while !eof(r.io)
         r.lineno[] += 1
-        x = Parsing.parse_data_line(Parsing.State(readline(r.io), 1, r.lineno[]))
+        line = readline(r.io)
+        if isempty(line)
+            @info "Ignored empty line at $(r.lineno[])"
+            break
+        end
+        x = Parsing.parse_data_line(Parsing.State(line, 1, r.lineno[]))
         if length(x) == N
             row = ntuple(Val(N)) do i
                 parse_entry(types.parameters[i], r.parsers[i], x[i])
