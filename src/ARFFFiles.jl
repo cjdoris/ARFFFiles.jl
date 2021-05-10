@@ -485,8 +485,8 @@ function nextrow(r::ARFFReader{names, types, P}) where {names, types, P<:Tuple}
         r.lineno[] += 1
         line = readline(r.io)
         if isempty(line)
-            @info "Ignored empty line at $(r.lineno[])"
-            break
+            @debug "Ignored empty line at $(r.lineno[])"
+            continue
         end
         x = Parsing.parse_data_line(Parsing.State(line, 1, r.lineno[]))
         if length(x) == N
