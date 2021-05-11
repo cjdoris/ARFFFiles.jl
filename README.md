@@ -4,6 +4,12 @@ Load and save [ARFF (Attribute Relation File Format)](https://waikato.github.io/
 
 Integrated into `Tables.jl` (for easily converting to your favourite table type) and `FileIO.jl` (for generic file loading).
 
+## Install
+
+```
+] add ARFFFiles
+```
+
 ## Quick start
 
 To load an ARFF file as a `DataFrame`:
@@ -11,7 +17,7 @@ To load an ARFF file as a `DataFrame`:
 using ARFFFiles, DataFrames
 df = ARFFFiles.load(DataFrame, "mytable.arff")
 ```
-Replace `DataFrame` with your favourite table type.
+Replace `DataFrame` with your favourite table type, or leave it out to get a vector of named tuples.
 
 ## Loading
 
