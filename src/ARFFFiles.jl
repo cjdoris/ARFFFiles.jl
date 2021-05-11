@@ -20,7 +20,9 @@ struct ARFFNominalType <: ARFFType
     classes :: Vector{String}
 end
 
-struct ARFFRelation
+abstract type ARFFHeaderItem end
+
+struct ARFFRelation <: ARFFHeaderItem
     name :: String
 end
 
@@ -31,11 +33,11 @@ Represents a single ARFF @attribute.
 
 It has a `name` and a `type` (a [`ARFFType`](@ref)).
 """
-struct ARFFAttribute
+struct ARFFAttribute <: ARFFHeaderItem
     name :: String
     type :: ARFFType
 end
-struct ARFFDataStart end
+struct ARFFDataStart <: ARFFHeaderItem end
 
 """
     Parsing
@@ -44,7 +46,7 @@ Sub-module handling low-level parsing of lines of ARFF files. Main routines are 
 """
 module Parsing
 
-    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelation, ARFFAttribute, ARFFDataStart
+    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart
 
     const _SPACE = UInt8(' ')
     const _AT = UInt8('@')
@@ -101,7 +103,7 @@ module Parsing
     skipcomment!(s::State) =
         @inbounds if maybeskip!(s, _COMMENT); s.pos = length(s)+1; end
 
-    function parse_type(s::State)
+    function parse_type(s::State) :: ARFFType
         if maybeskip!(s, _N)
             skip!(s, _U, _M, _E, _R, _I, _C)
             return ARFFNumericType()
@@ -144,32 +146,40 @@ module Parsing
         end
     end
 
-    function parse_string(s::State)
+    function parse_string(s::State) :: String
         io = IOBuffer()
         if maybeskip!(s, _DQUO)
-            @inbounds while hasmore(s)
-                c = curbyte(s)
-                if c == _DQUO
-                    inc!(s)
-                    break
-                elseif c == _ESC
-                    error("escape sequences not supported yet")
+            @inbounds while true
+                if hasmore(s)
+                    c = curbyte(s)
+                    if c == _DQUO
+                        inc!(s)
+                        break
+                    elseif c == _ESC
+                        error("escape sequences not supported yet")
+                    else
+                        inc!(s)
+                        write(io, c)
+                    end
                 else
-                    inc!(s)
-                    write(io, c)
+                    _error_expecting(s, "string character")
                 end
             end
         elseif maybeskip!(s, _SQUO)
-            @inbounds while hasmore(s)
-                c = curbyte(s)
-                if c == _SQUO
-                    inc!(s)
-                    break
-                elseif c == _ESC
-                    error("escapes sequences not supported yet")
+            @inbounds while true
+                if hasmore(s)
+                    c = curbyte(s)
+                    if c == _SQUO
+                        inc!(s)
+                        break
+                    elseif c == _ESC
+                        error("escapes sequences not supported yet")
+                    else
+                        inc!(s)
+                        write(io, c)
+                    end
                 else
-                    inc!(s)
-                    write(io, c)
+                    _error_expecting(s, "string character")
                 end
             end
         else
@@ -187,7 +197,7 @@ module Parsing
         String(take!(io))
     end
 
-    function parse_header_line(s::State)
+    function parse_header_line(s::State) :: Union{Nothing, ARFFHeaderItem}
         skipspace!(s)
         r = nothing
         if maybeskip!(s, _AT)
@@ -212,11 +222,11 @@ module Parsing
             skipspace!(s)
         end
         skipcomment!(s)
-        hasmore(s) && _error_expecting(s, r===nothing ? "command or end of string" : "end of string")
+        hasmore(s) && _error_expecting(s, r===nothing ? "command or end of line" : "end of line")
         return r
     end
 
-    function parse_datum(s::State)
+    function parse_datum(s::State) :: Union{Missing, String}
         if maybeskip!(s, _MISSING)
             return missing
         else
@@ -224,23 +234,40 @@ module Parsing
         end
     end
 
-    function parse_data_line(s::State)
-        skipspace!(s)
+    function parse_data_line(s::State) :: Vector{Union{String, Missing}}
         xs = Union{String, Missing}[]
-        while true
-            x = parse_datum(s)
-            push!(xs, x)
-            skipspace!(s)
-            if maybeskip!(s, _SEP)
-                skipspace!(s)
-            else
-                break
-            end
-        end
+        skipspace!(s)
         skipcomment!(s)
-        hasmore(s) && _error_expecting(s, "end of string")
+        if hasmore(s)
+            while true
+                x = parse_datum(s)
+                push!(xs, x)
+                skipspace!(s)
+                if maybeskip!(s, _SEP)
+                    skipspace!(s)
+                else
+                    break
+                end
+            end
+            skipcomment!(s)
+            hasmore(s) && _error_expecting(s, "end of line")
+        end
         return xs
     end
+end
+
+"""
+    ARFFHeader
+
+Represents the header information in an ARFF file.
+
+It has these fields:
+- `relation`: the @relation name.
+- `attributes`: vector of each @attribute as an [`ARFFAttribute`](@ref).
+"""
+struct ARFFHeader
+    relation :: String
+    attributes :: Vector{ARFFAttribute}
 end
 
 """
@@ -250,7 +277,7 @@ Parse the ARFF header from `io`, stopping after `@data` is seen.
 
 Returns the [`ARFFHeader`](@ref) and the number of lines read.
 """
-function parse_header(io::IO)
+function parse_header(io::IO) :: Tuple{ARFFHeader, Int}
     relation = missing
     attributes = ARFFAttribute[]
     lineno = 0
@@ -369,20 +396,6 @@ function parse_javadateformat(java::AbstractString)
 end
 
 """
-    ARFFHeader
-
-Represents the header information in an ARFF file.
-
-It has these fields:
-- `relation`: the @relation name.
-- `attributes`: vector of each @attribute as an [`ARFFAttribute`](@ref).
-"""
-struct ARFFHeader
-    relation :: String
-    attributes :: Vector{ARFFAttribute}
-end
-
-"""
     ARFFReader{names, types}
 
 An object holding an IO stream of an ARFF file, used to access its data.
@@ -399,12 +412,12 @@ It has the following functionality:
 - Iteration yields rows of `r`.
 - It satisfies the `Tables.jl` interface, so e.g. `DataFrame(r)` does what you think.
 """
-struct ARFFReader{names, types, Parsers}
-    io :: IO
+struct ARFFReader{names, types, Parsers, IOType}
+    io :: IOType
     own_io :: Bool
     header :: ARFFHeader
     parsers :: Parsers
-    lineno :: Ref{Int}
+    lineno :: Base.RefValue{Int}
 end
 
 Base.close(r::ARFFReader) =
@@ -444,7 +457,7 @@ function loadstreaming(io::IO, own::Bool, header::ARFFHeader, lineno::Integer; m
         push!(parsers, p)
     end
     ps = Tuple(parsers)
-    ARFFReader{Tuple(names), Tuple{types...}, typeof(ps)}(io, own, header, ps, Ref(Int(lineno)))
+    ARFFReader{Tuple(names), Tuple{types...}, typeof(ps), typeof(io)}(io, own, header, ps, Ref(Int(lineno)))
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -474,21 +487,29 @@ thenclose(f, r::ARFFReader) =
         close(r)
     end
 
+@generated function _parse_entries(r::ARFFReader{names, types}, row) where {names, types}
+    Ts = types.parameters
+    N = length(Ts)
+    xs = [Symbol("x", i) for i in 1:N]
+    quote
+        @assert length(row) == $N
+        $([:(@inbounds $(xs[i]) = parse_entry($(Ts[i]), r.parsers[$i], row[$i])) for i in 1:N]...)
+        NamedTuple{$names, $types}(($(xs...),))
+    end
+end
+
 """
     nextrow(r::ARFFReader{names, types}) :: Union{Nothing, NamedTuple{names, types}}
 
 The next row of data from the given `ARFFReader`, or `nothing` if everything has been read.
 """
-function nextrow(r::ARFFReader{names, types, P}) where {names, types, P<:Tuple}
-    N = length(P.parameters)
+function nextrow(r::ARFFReader{names, types}) where {names, types}
+    N = length(r.parsers)
     while !eof(r.io)
         r.lineno[] += 1
         x = Parsing.parse_data_line(Parsing.State(readline(r.io), 1, r.lineno[]))
         if length(x) == N
-            row = ntuple(Val(N)) do i
-                parse_entry(types.parameters[i], r.parsers[i], x[i])
-            end :: types
-            return NamedTuple{names, types}(row)
+            return _parse_entries(r, x)
         elseif !(isempty(x))
             error("line $(r.lineno[]): expected $N fields, found $(length(x))")
         end
