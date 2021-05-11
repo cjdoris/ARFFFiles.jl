@@ -554,7 +554,7 @@ end
 
 Base.IteratorSize(::Type{<:ARFFReader}) = Base.SizeUnknown()
 
-function Base.iterate(r::ARFFReader, st=nothing)
+function Base.iterate(r::ARFFReader, ::Nothing=nothing)
     x = nextrow(r)
     x === nothing ? nothing : (x, nothing)
 end
@@ -564,7 +564,7 @@ end
 Tables.istable(r::ARFFReader) = true
 Tables.rowaccess(r::ARFFReader) = true
 Tables.rows(r::ARFFReader) = r
-Tables.schema(r::ARFFReader{names, types}) where {names, types} = Tables.Schema(names, types)
+Tables.schema(::ARFFReader{names, types}) where {names, types} = Tables.Schema(names, types)
 
 ### FILEIO INTEGRATION
 
