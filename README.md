@@ -19,6 +19,12 @@ df = ARFFFiles.load(DataFrame, "mytable.arff")
 ```
 Replace `DataFrame` with your favourite table type, or leave it out to get a vector of named tuples.
 
+To save any Tables.jl-compatible table:
+```julia
+using ARFFFiles
+ARFFFiles.save("mytable.arff", df)
+```
+
 ## Loading
 
 - `load(file)` loads the table in the given file as a vector of named tuples.
@@ -34,10 +40,17 @@ Replace `DataFrame` with your favourite table type, or leave it out to get a vec
 
 **Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)).
 
-**Missing data.** By default we assume all columns can contain missing data (`?`).
-Option `missingcols` to the above functions controls this behaviour, it can be `true`, `false`,
-a vector or set of symbols, or a function taking a symbol and returning true if that column can contain missings.
+**Keyword options.**
+- `missingcols=true`: By default we assume all columns can contain missing data (`?`). This option controls this behaviour. It can be `true`, `false`, a vector or set of symbols, or a function taking a symbol and returning true if that column can contain missings.
+- `missingnan=false`: Convert missing values in numeric columns to NaN. This is equivalent to excluding these columns in `missingcols`.
+- `categorical=true`: When false, nominal columns are converted to `String` instead of `CategoricalValue{String}`.
 
 ## Saving
 
-Not implemented.
+- `save(file, table)` saves the Tables.jl-compatible `table` to `file` (a filename or IO stream).
+
+**Types.** `Real` is saved as numeric, `AbstractString` as string, `DateTime` and `Date` as date, and `CategoricalValue{<:AbstractString}` as nominal.
+
+**Keyword options.**
+- `relation="data"`: The relation name.
+- `comment`: A comment to print at the top of the file.

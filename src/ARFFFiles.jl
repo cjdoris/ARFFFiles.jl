@@ -85,6 +85,8 @@ module Parsing
     Base.@propagate_inbounds Base.getindex(s::State, i::Int) = codeunit(s.src, i)
     @inline hasmore(s::State) = s.pos ≤ length(s)
     @inline inc!(s::State) = (s.pos += 1; nothing)
+    @inline dec!(s::State) = (s.pos -= 1; nothing)
+    @inline prevbyte(s::State) = s[s.pos-1]
     @inline curbyte(s::State) = s[s.pos]
     @inline maybeskip!(s::State, c::UInt8) = @inbounds (hasmore(s) && curbyte(s) == c ? (inc!(s); true) : false)
     @inline maybeskip!(s::State, cs::Tuple{Vararg{UInt8}}) = @inbounds (hasmore(s) && curbyte(s) in cs ? (inc!(s); true) : false)
@@ -128,16 +130,18 @@ module Parsing
         elseif maybeskip!(s, _NOMSTART)
             skipspace!(s)
             xs = String[]
-            while true
-                x = parse_string(s)
-                push!(xs, x)
-                skipspace!(s)
-                if maybeskip!(s, _SEP)
+            if !maybeskip!(s, _NOMEND)
+                while true
+                    x = parse_string(s)
+                    push!(xs, x)
                     skipspace!(s)
-                elseif maybeskip!(s, _NOMEND)
-                    break
-                else
-                    _error_expecting(s, (_SEP, _NOMEND))
+                    if maybeskip!(s, _SEP)
+                        skipspace!(s)
+                    elseif maybeskip!(s, _NOMEND)
+                        break
+                    else
+                        _error_expecting(s, (_SEP, _NOMEND))
+                    end
                 end
             end
             return ARFFNominalType(xs)
@@ -146,40 +150,46 @@ module Parsing
         end
     end
 
+    function parse_esc(s::State)
+        if hasmore(s)
+            c = @inbounds curbyte(s)
+            inc!(s)
+            c in (_DQUO, _SQUO, _ESC) ? c :
+            c == UInt8('0') ? 0x00 :
+            c == UInt8('a') ? UInt8('\a') :
+            c == UInt8('b') ? UInt8('\b') :
+            c == UInt8('e') ? UInt8('\e') :
+            c == UInt8('f') ? UInt8('\f') :
+            c == UInt8('n') ? UInt8('\n') :
+            c == UInt8('r') ? UInt8('\r') :
+            c == UInt8('t') ? UInt8('\t') :
+            c == UInt8('v') ? UInt8('\v') :
+            (dec!(s); _error_expecting(s, "escape character"))
+        else
+            _error_expecting(s, "escape character")
+        end
+    end
+
     function parse_string(s::State) :: String
         io = IOBuffer()
-        if maybeskip!(s, _DQUO)
+        if maybeskip!(s, (_DQUO, _SQUO))
+            q = @inbounds prevbyte(s)
             @inbounds while true
                 if hasmore(s)
                     c = curbyte(s)
-                    if c == _DQUO
-                        inc!(s)
+                    inc!(s)
+                    if c == q
                         break
                     elseif c == _ESC
-                        error("escape sequences not supported yet")
-                    else
-                        inc!(s)
+                        write(io, parse_esc(s))
+                    elseif c < 0x80
                         write(io, c)
+                    else
+                        dec!(s)
+                        _error_expecting(s, "ASCII character")
                     end
                 else
-                    _error_expecting(s, "string character")
-                end
-            end
-        elseif maybeskip!(s, _SQUO)
-            @inbounds while true
-                if hasmore(s)
-                    c = curbyte(s)
-                    if c == _SQUO
-                        inc!(s)
-                        break
-                    elseif c == _ESC
-                        error("escapes sequences not supported yet")
-                    else
-                        inc!(s)
-                        write(io, c)
-                    end
-                else
-                    _error_expecting(s, "string character")
+                    _error_expecting(s, "ASCII character")
                 end
             end
         else
@@ -302,29 +312,13 @@ function parse_header(io::IO) :: Tuple{ARFFHeader, Int}
     return error("reached end of file before seeing @data")
 end
 
-"""
-    parse_entry(T, p, x::Union{Missing,String})
-
-Parse entry `x` to a `T` using parsing information `p`. See [`typeandparser`](@ref).
-"""
 parse_entry(::Type{T}, ::Any, ::Missing) where {T} = error("missing data found (expecting $T)")
 parse_entry(::Type{T}, ::Any, ::Missing) where {T>:Missing} = missing
+parse_entry(::Type{Float64}, ::Any, ::Missing) = NaN
 parse_entry(::Type{T}, ::Nothing, x::String) where {T>:String} = x
 parse_entry(::Type{T}, ::Nothing, x::String) where {T>:Float64} = parse(Float64, x)
 parse_entry(::Type{T}, fmt::DateFormat, x::String) where {T>:DateTime} = DateTime(x, fmt)
-parse_entry(::Type{T}, p::CategoricalPool{String,Int32}, x::String) where {T>:CategoricalValue{String,Int32}} = haskey(p.invindex, x) ? p[get(p, x)] : error("invalid nominal $(repr(x)), expecting one of $(join(map(repr, p.levels), " "))")
-
-"""
-    typeandparser(t::ARFFType)
-
-A pair `(T, p)` of a Julia type and extra parsing information corresponding to the given ARFF type.
-
-Then `parse_entry(T, p, x)` parses the ARFF entry `x` to the type `T`.
-"""
-typeandparser(::ARFFNumericType) = Float64, nothing
-typeandparser(t::ARFFDateType) = DateTime, parse_javadateformat(t.format)
-typeandparser(::ARFFStringType) = String, nothing
-typeandparser(t::ARFFNominalType) = CategoricalValue{String,Int32}, CategoricalPool{String,Int32}(t.classes)
+parse_entry(::Type{T}, p::CategoricalPool{String,UInt32}, x::String) where {T>:CategoricalValue{String,UInt32}} = haskey(p.invindex, x) ? p[get(p, x)] : error("invalid nominal $(repr(x)), expecting one of $(join(map(repr, p.levels), " "))")
 
 """
     parse_javadateformat(java::AbstractString)
@@ -439,7 +433,7 @@ name, or a function taking a column name and returning true or false.
 loadstreaming(io::IO, own::Bool=false; opts...) =
     loadstreaming(io, own, parse_header(io)...; opts...)
 
-function loadstreaming(io::IO, own::Bool, header::ARFFHeader, lineno::Integer; missingcols=true)
+function loadstreaming(io::IO, own::Bool, header::ARFFHeader, lineno::Integer; missingcols=true, missingnan::Bool=false, categorical::Bool=true)
     missingcols =
         missingcols === true ? c->true :
         missingcols === false ? c->false :
@@ -451,9 +445,31 @@ function loadstreaming(io::IO, own::Bool, header::ARFFHeader, lineno::Integer; m
     parsers = []
     for a in header.attributes
         n = Symbol(a.name)
-        t, p = typeandparser(a.type)
-        push!(names, Symbol(a.name))
-        push!(types, missingcols(n) ? Union{t, Missing} : t)
+        if a.type isa ARFFNumericType
+            t = Float64
+            p = nothing
+        elseif a.type isa ARFFStringType
+            t = String
+            p = nothing
+        elseif a.type isa ARFFNominalType
+            if categorical
+                t = CategoricalValue{String,UInt32}
+                p = CategoricalPool{String,UInt32}(a.type.classes)
+            else
+                t = String
+                p = nothing
+            end
+        elseif a.type isa ARFFDateType
+            t = DateTime
+            p = parse_javadateformat(a.type.format)
+        else
+            error("not implemented")
+        end
+        if missingcols(n) && !(missingnan && a.type isa ARFFNumericType)
+            t = Union{t, Missing}
+        end
+        push!(names, n)
+        push!(types, t)
         push!(parsers, p)
     end
     ps = Tuple(parsers)
@@ -550,6 +566,122 @@ function Base.read(r::ARFFReader{names, types}, n::Integer) where {names, types}
     x
 end
 
+### SAVING
+
+function write_datum(io::IO, x::Union{String,SubString{String}})
+    write(io, UInt8('"'))
+    for c in codeunits(x)
+        c == 0x00 ? write(io, "\\0") :
+        c == UInt8('"') ? write(io, "\\\"") :
+        c == UInt8('\\') ? write(io, "\\\\") :
+        c == UInt8('\a') ? write(io, "\\a") :
+        c == UInt8('\b') ? write(io, "\\b") :
+        c == UInt8('\e') ? write(io, "\\e") :
+        c == UInt8('\f') ? write(io, "\\f") :
+        c == UInt8('\n') ? write(io, "\\n") :
+        c == UInt8('\r') ? write(io, "\\r") :
+        c == UInt8('\t') ? write(io, "\\t") :
+        c == UInt8('\v') ? write(io, "\\v") :
+        c < 0x80 ? write(io, c) :
+        error("string is not ASCII: $(repr(String(x)))")
+    end
+    write(io, UInt8('"'))
+end
+write_datum(io::IO, x::AbstractString) = write_datum(io, convert(String, x))
+write_datum(io::IO, x::Union{Int8,UInt8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128,BigInt,Float16,Float32,Float64,BigFloat}) = print(io, x)
+write_datum(io::IO, x::Integer) = write_datum(io, convert(BigInt, x))
+write_datum(io::IO, x::Real) = write_datum(io, convert(BigFloat, x))
+write_datum(io::IO, x::DateTime) = write_datum(io, Dates.format(x, dateformat"YYYY-mm-dd\THH:MM:SS.sss"))
+write_datum(io::IO, x::Date) = write_datum(io, DateTime(x))
+write_datum(io::IO, x::CategoricalValue{<:AbstractString}) = write_datum(io, x.pool.levels[x.level])
+write_datum(io::IO, ::Missing) = write(io, "?")
+
+function find_levels(rows, ::Val{name}) where {name}
+    for row in rows
+        x = Tables.getcolumn(row, name)
+        x === missing && continue
+        return x.pool.levels
+    end
+end
+
+@generated function write_data(io::IO, rows, ::Val{N}) where {N}
+    exs = []
+    for i in 1:N
+        push!(exs, :(write_datum(io, row[$i])))
+        push!(exs, :(print(io, $(i==N ? "\n" : ","))))
+    end
+    quote
+        for row in rows
+            $(exs...)
+        end
+    end
+end
+
+"""
+    save(file, table; relation="data", comment=...)
+
+Save the Tables.jl-compatible `table` in ARFF format to `file`,
+which must be an IO stream or file.
+
+The relation name is `relation`. The given `comment` is written at
+the top of the file.
+"""
+function save(io::IO, df;
+    relation::AbstractString="data",
+    comment::AbstractString="Written by ARFFFiles.jl at $(Dates.now())",
+)
+    rows = Tables.rows(df)
+    schema = Tables.schema(rows)
+    schema === nothing && error("schema unknown")
+    # comment
+    if !isempty(comment)
+        for line in split(comment, '\n')
+            println(io, "% ", line)
+        end
+        println(io)
+    end
+    # relation
+    print(io, "@RELATION ")
+    write_datum(io, relation)
+    println(io)
+    println(io)
+    # attributes
+    for (name, type) in zip(schema.names, schema.types)
+        print(io, "@ATTRIBUTE ")
+        write_datum(io, string(name))
+        print(io, " ")
+        if type <: Missing
+            println(io, " {}")
+        elseif type <: Union{Real, Missing}
+            println(io, "NUMERIC")
+        elseif type <: Union{AbstractString, Missing}
+            println(io, "STRING")
+        elseif type <: Union{Date, DateTime, Missing}
+            println(io, "DATE \"yyyy-MM-dd'T'HH:mm:ss.SSS\"")
+        elseif type <: Union{<:CategoricalValue{<:AbstractString},Missing}
+            # find the levels of the first non-missing entry
+            levels = find_levels(Tables.rows(df), Val(name))
+            if levels === nothing || isempty(levels)
+                println(io, "{}")
+            else
+                for (i, level) in enumerate(levels)
+                    print(io, i==1 ? "{" : ",")
+                    write_datum(io, level)
+                end
+                println(io, "}")
+            end
+        else
+            error("ARFF does not support data of type $type in column $name")
+        end
+    end
+    println(io)
+    # data
+    println(io, "@DATA")
+    write_data(io, rows, Val(length(schema.names)))
+end
+
+save(filename::AbstractString, df; opts...) = open(io->save(io, df; opts...), filename, "w")
+
 ### ITERATION
 
 Base.IteratorSize(::Type{<:ARFFReader}) = Base.SizeUnknown()
@@ -569,8 +701,10 @@ Tables.schema(::ARFFReader{names, types}) where {names, types} = Tables.Schema(n
 ### FILEIO INTEGRATION
 
 load(f::File{format"ARFF"}; opts...) = load(open(f), true; opts...)
-load(s::Stream{format"ARFF"}, own=false; opts...) = load(s.io, own; opts...)
+load(s::Stream{format"ARFF"}; opts...) = load(s.io, false; opts...)
 
 loadstreaming(s::Stream{format"ARFF"}; opts...) = loadstreaming(s.io, false; opts...)
+
+save(f::File{format"ARFF"}, df; opts...) = open(io->save(io, df; opts...), f, "w")
 
 end # module
