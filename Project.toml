@@ -1,7 +1,7 @@
 name = "ARFFFiles"
 uuid = "da404889-ca92-49ff-9e8b-0aa6b4d38dc8"
 authors = ["Christopher Doris <github.com/cjdoris>"]
-version = "1.2.0"
+version = "1.1.0"
 
 [deps]
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
