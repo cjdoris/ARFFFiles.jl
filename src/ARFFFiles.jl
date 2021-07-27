@@ -1,8 +1,9 @@
 module ARFFFiles
 
+using Base: Char, String, NamedTuple
 using Dates, Tables, CategoricalArrays, FileIO
 
-export ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader, ARFFReader
+export ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader, ARFFReader, ARFFRow
 
 """
     ARFFType
@@ -40,233 +41,6 @@ end
 struct ARFFDataStart <: ARFFHeaderItem end
 
 """
-    Parsing
-
-Sub-module handling low-level parsing of lines of ARFF files. Main routines are [`parse_header_line`](@ref) and [`parse_data_line`](@ref).
-"""
-module Parsing
-
-    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart
-
-    const _SPACE = UInt8(' ')
-    const _AT = UInt8('@')
-    const _COMMENT = UInt8('%')
-    const _DQUO = UInt8('"')
-    const _SQUO = UInt8('\'')
-    const _SEP = UInt8(',')
-    const _MISSING = UInt8('?')
-    const _ESC = UInt8('\\')
-    const _NOMSTART = UInt8('{')
-    const _NOMEND = UInt8('}')
-    const _ILLEGAL_RAWCHAR = (_SPACE, _AT, _COMMENT, _DQUO, _SQUO, _SEP, _MISSING, _ESC, _NOMSTART, _NOMEND)
-    const _A = (UInt8('a'), UInt8('A'))
-    const _B = (UInt8('b'), UInt8('B'))
-    const _C = (UInt8('c'), UInt8('C'))
-    const _D = (UInt8('d'), UInt8('D'))
-    const _E = (UInt8('e'), UInt8('E'))
-    const _G = (UInt8('g'), UInt8('G'))
-    const _I = (UInt8('i'), UInt8('I'))
-    const _L = (UInt8('l'), UInt8('L'))
-    const _M = (UInt8('m'), UInt8('M'))
-    const _N = (UInt8('n'), UInt8('N'))
-    const _O = (UInt8('o'), UInt8('O'))
-    const _R = (UInt8('r'), UInt8('R'))
-    const _S = (UInt8('s'), UInt8('S'))
-    const _T = (UInt8('t'), UInt8('T'))
-    const _U = (UInt8('u'), UInt8('U'))
-
-    mutable struct State
-        src :: String
-        pos :: Int
-        lineno :: Int
-    end
-
-    Base.length(s::State) = sizeof(s.src)
-    Base.@propagate_inbounds Base.getindex(s::State, i::Int) = codeunit(s.src, i)
-    @inline hasmore(s::State) = s.pos ≤ length(s)
-    @inline inc!(s::State) = (s.pos += 1; nothing)
-    @inline dec!(s::State) = (s.pos -= 1; nothing)
-    @inline prevbyte(s::State) = s[s.pos-1]
-    @inline curbyte(s::State) = s[s.pos]
-    @inline maybeskip!(s::State, c::UInt8) = @inbounds (hasmore(s) && curbyte(s) == c ? (inc!(s); true) : false)
-    @inline maybeskip!(s::State, cs::Tuple{Vararg{UInt8}}) = @inbounds (hasmore(s) && curbyte(s) in cs ? (inc!(s); true) : false)
-    @inline skip!(s::State, c::UInt8) = @inbounds (hasmore(s) && curbyte(s) == c ? (inc!(s); nothing) : _error_expecting(s, c))
-    @inline skip!(s::State, cs::Tuple{Vararg{UInt8}}) = @inbounds (hasmore(s) && curbyte(s) in cs ? (inc!(s); nothing) : _error_expecting(s, cs))
-    @inline skip!(s::State, c, cs...) = (skip!(s, c); skip!(s, cs...))
-
-    @noinline _error_expecting(s::State, c::UInt8) = _error(s, "expecting $(repr(Char(c)))")
-    @noinline _error_expecting(s::State, cs::Tuple{Vararg{UInt8}}) = _error(s, "expecting one of $(join(map(repr∘Char, cs), " "))")
-    @noinline _error_expecting(s::State, what::String) = _error(s, "expecting $what")
-    @noinline _error(s::State, msg) = error("line $(s.lineno):$(s.pos): parsing error: $msg")
-
-    skipspace!(s::State) =
-        @inbounds while maybeskip!(s, _SPACE); end
-
-    skipcomment!(s::State) =
-        @inbounds if maybeskip!(s, _COMMENT); s.pos = length(s)+1; end
-
-    function parse_type(s::State) :: ARFFType
-        if maybeskip!(s, _N)
-            skip!(s, _U, _M, _E, _R, _I, _C)
-            return ARFFNumericType()
-        elseif maybeskip!(s, _R)
-            skip!(s, _E, _A, _L)
-            return ARFFNumericType()
-        elseif maybeskip!(s, _I)
-            skip!(s, _N, _T, _E, _G, _E, _R)
-            return ARFFNumericType()
-        elseif maybeskip!(s, _S)
-            skip!(s, _T, _R, _I, _N, _G)
-            return ARFFStringType()
-        elseif maybeskip!(s, _D)
-            skip!(s, _A, _T, _E)
-            skipspace!(s)
-            if hasmore(s) && (curbyte(s) in (_SQUO, _DQUO) || curbyte(s) ∉ _ILLEGAL_RAWCHAR)
-                fmt = parse_string(s)
-                return ARFFDateType(fmt)
-            else
-                return ARFFDateType()
-            end
-        elseif maybeskip!(s, _NOMSTART)
-            skipspace!(s)
-            xs = String[]
-            if !maybeskip!(s, _NOMEND)
-                while true
-                    x = parse_string(s)
-                    push!(xs, x)
-                    skipspace!(s)
-                    if maybeskip!(s, _SEP)
-                        skipspace!(s)
-                    elseif maybeskip!(s, _NOMEND)
-                        break
-                    else
-                        _error_expecting(s, (_SEP, _NOMEND))
-                    end
-                end
-            end
-            return ARFFNominalType(xs)
-        else
-            _error_expecting(s, "a type")
-        end
-    end
-
-    function parse_esc(s::State)
-        if hasmore(s)
-            c = @inbounds curbyte(s)
-            inc!(s)
-            c in (_DQUO, _SQUO, _ESC) ? c :
-            c == UInt8('0') ? 0x00 :
-            c == UInt8('a') ? UInt8('\a') :
-            c == UInt8('b') ? UInt8('\b') :
-            c == UInt8('e') ? UInt8('\e') :
-            c == UInt8('f') ? UInt8('\f') :
-            c == UInt8('n') ? UInt8('\n') :
-            c == UInt8('r') ? UInt8('\r') :
-            c == UInt8('t') ? UInt8('\t') :
-            c == UInt8('v') ? UInt8('\v') :
-            (dec!(s); _error_expecting(s, "escape character"))
-        else
-            _error_expecting(s, "escape character")
-        end
-    end
-
-    function parse_string(s::State) :: String
-        io = IOBuffer()
-        if maybeskip!(s, (_DQUO, _SQUO))
-            q = @inbounds prevbyte(s)
-            @inbounds while true
-                if hasmore(s)
-                    c = curbyte(s)
-                    inc!(s)
-                    if c == q
-                        break
-                    elseif c == _ESC
-                        write(io, parse_esc(s))
-                    elseif c < 0x80
-                        write(io, c)
-                    else
-                        dec!(s)
-                        _error_expecting(s, "ASCII character")
-                    end
-                else
-                    _error_expecting(s, "ASCII character")
-                end
-            end
-        else
-            @inbounds while hasmore(s)
-                c = curbyte(s)
-                if c in _ILLEGAL_RAWCHAR
-                    break
-                else
-                    write(io, c)
-                    inc!(s)
-                end
-            end
-            io.size > 0 || _error_expecting(s, "a string")
-        end
-        String(take!(io))
-    end
-
-    function parse_header_line(s::State) :: Union{Nothing, ARFFHeaderItem}
-        skipspace!(s)
-        r = nothing
-        if maybeskip!(s, _AT)
-            if maybeskip!(s, _D)
-                skip!(s, _A, _T, _A)
-                r = ARFFDataStart()
-            elseif maybeskip!(s, _A)
-                skip!(s, _T, _T, _R, _I, _B, _U, _T, _E)
-                skipspace!(s)
-                name = parse_string(s)
-                skipspace!(s)
-                tp = parse_type(s)
-                r = ARFFAttribute(name, tp)
-            elseif maybeskip!(s, _R)
-                skip!(s, _E, _L, _A, _T, _I, _O, _N)
-                skipspace!(s)
-                name = parse_string(s)
-                r = ARFFRelation(name)
-            else
-                _error(s, "invalid attribute")
-            end
-            skipspace!(s)
-        end
-        skipcomment!(s)
-        hasmore(s) && _error_expecting(s, r===nothing ? "command or end of line" : "end of line")
-        return r
-    end
-
-    function parse_datum(s::State) :: Union{Missing, String}
-        if maybeskip!(s, _MISSING)
-            return missing
-        else
-            parse_string(s)
-        end
-    end
-
-    function parse_data_line(s::State) :: Vector{Union{String, Missing}}
-        xs = Union{String, Missing}[]
-        skipspace!(s)
-        skipcomment!(s)
-        if hasmore(s)
-            while true
-                x = parse_datum(s)
-                push!(xs, x)
-                skipspace!(s)
-                if maybeskip!(s, _SEP)
-                    skipspace!(s)
-                else
-                    break
-                end
-            end
-            skipcomment!(s)
-            hasmore(s) && _error_expecting(s, "end of line")
-        end
-        return xs
-    end
-end
-
-"""
     ARFFHeader
 
 Represents the header information in an ARFF file.
@@ -281,44 +55,276 @@ struct ARFFHeader
 end
 
 """
-    parse_header(io::IO)
+    Parsing
 
-Parse the ARFF header from `io`, stopping after `@data` is seen.
-
-Returns the [`ARFFHeader`](@ref) and the number of lines read.
+Sub-module handling low-level parsing of lines of ARFF files. Main routines are [`parse_header_line`](@ref) and [`parse_data_line`](@ref).
 """
-function parse_header(io::IO) :: Tuple{ARFFHeader, Int}
-    relation = missing
-    attributes = ARFFAttribute[]
-    lineno = 0
-    while !eof(io)
-        lineno += 1
-        h = Parsing.parse_header_line(Parsing.State(readline(io), 1, lineno))
-        if h === nothing
-            # blank line
-        elseif h isa ARFFRelation
-            relation === missing || error("line $lineno: @relation seen twice")
-            relation = h.name
-        elseif h isa ARFFAttribute
-            relation === missing && error("line $lineno: @relation required before @attribute")
-            push!(attributes, h)
-        elseif h isa ARFFDataStart
-            relation === missing && error("line $lineno: @relation required before @data")
-            return ARFFHeader(relation, attributes), lineno
+module Parsing
+
+    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader
+
+    mutable struct State{S<:IO}
+        io :: S
+        eof :: Bool
+        char :: Char
+    end
+
+    function State(io::IO)
+        s = State{typeof(io)}(io, false, '\0')
+        inc!(s)
+        return s
+    end
+
+    function inc!(s::State)
+        s.eof = eof(s.io)
+        if !s.eof
+            s.char = read(s.io, Char)
+        end
+        return
+    end
+
+    function skipspace!(s::State)
+        while !s.eof
+            if s.char in ('\n', '\r')
+                break
+            elseif isspace(s.char)
+                inc!(s)
+            elseif s.char == '%'
+                inc!(s)
+                while !s.eof
+                    if s.char in ('\n', '\r')
+                        break
+                    else
+                        inc!(s)
+                    end
+                end
+                break
+            else
+                break
+            end
+        end
+        return
+    end
+
+    maybeskip!(s::State, c::Char) = (!s.eof && s.char == c) ? (inc!(s); true) : false
+    maybeskip!(s::State, cs::Tuple{Vararg{Char}}) = (!s.eof && s.char in cs) ? (inc!(s); true) : false
+
+    skip!(s::State, arg) = maybeskip!(s, arg) ? nothing : errorexpecting(s, arg)
+    skip!(s::State, args...) = foreach(a->skip!(s, a), args)
+
+    function skipnewline!(s::State)
+        if s.eof
+            errorexpecting(s, "new line")
+        elseif s.char == '\n'
+            inc!(s)
+        elseif s.char == '\r'
+            inc!(s)
+            s.char == '\n' && inc!(s)
         else
-            error()
+            errorexpecting(s, "new line")
+        end
+        return
+    end
+
+    error(s::State, msg...) = Base.error(sprint(print, "byte ", position(s.io), ": syntax error: ", msg...))
+
+    errorexpecting(s::State, msg::AbstractString) = error(s, "expecting ", msg, ", got ", s.eof ? "end of file" : repr(s.char))
+    errorexpecting(s::State, cs::Tuple{Vararg{Char}}) = error(s, join(map(repr, cs), ", ", " or "))
+    errorexpecting(s::State, c::Char) = errorexpecting(s, repr(c))
+
+    israwchar(c::Char) = !isspace(c) && c ∉ ('%', '"', '\'', ',', '\\', '{', '}')
+
+    isstringstart(c::Char) = israwchar(c) || c ∈ ('"', '\'')
+
+    function parse_type(s::State) :: ARFFType
+        if maybeskip!(s, ('n', 'N'))
+            skip!(s, ('u', 'U'), ('m', 'M'), ('e', 'E'), ('r', 'R'), ('i', 'I'), ('c', 'C'))
+            return ARFFNumericType()
+        elseif maybeskip!(s, ('r', 'R'))
+            skip!(s, ('e', 'E'), ('a', 'A'), ('l', 'L'))
+            return ARFFNumericType()
+        elseif maybeskip!(s, ('i', 'I'))
+            skip!(s, ('n', 'N'), ('t', 'T'), ('e', 'E'), ('g', 'G'), ('e', 'E'), ('r', 'R'))
+            return ARFFNumericType()
+        elseif maybeskip!(s, ('s', 'S'))
+            skip!(s, ('t', 'T'), ('r', 'R'), ('i', 'I'), ('n', 'N'), ('g', 'G'))
+            return ARFFStringType()
+        elseif maybeskip!(s, ('d', 'D'))
+            skip!(s, ('a', 'A'), ('t', 'T'), ('e', 'E'))
+            skipspace!(s)
+            if !s.eof && isstringstart(s.char)
+                return ARFFDateType(parse_string(s))
+            else
+                return ARFFDateType()
+            end
+        elseif maybeskip!(s, '{')
+            skipspace!(s)
+            xs = String[]
+            if !maybeskip!(s, '}')
+                while true
+                    push!(xs, parse_string(s))
+                    skipspace!(s)
+                    if maybeskip!(s, ',')
+                        skipspace!(s)
+                    elseif maybeskip!(s, '}')
+                        break
+                    else
+                        errorexpecting(s, (',', '}'))
+                    end
+                end
+            end
+            return ARFFNominalType(xs)
+        else
+            errorexpecting(s, "a type")
         end
     end
-    return error("reached end of file before seeing @data")
-end
 
-parse_entry(::Type{T}, ::Any, ::Missing) where {T} = error("missing data found (expecting $T)")
-parse_entry(::Type{T}, ::Any, ::Missing) where {T>:Missing} = missing
-parse_entry(::Type{Float64}, ::Any, ::Missing) = NaN
-parse_entry(::Type{T}, ::Nothing, x::String) where {T>:String} = x
-parse_entry(::Type{T}, ::Nothing, x::String) where {T>:Float64} = parse(Float64, x)
-parse_entry(::Type{T}, fmt::DateFormat, x::String) where {T>:DateTime} = DateTime(x, fmt)
-parse_entry(::Type{T}, p::CategoricalPool{String,UInt32}, x::String) where {T>:CategoricalValue{String,UInt32}} = haskey(p.invindex, x) ? p[get(p, x)] : error("invalid nominal $(repr(x)), expecting one of $(join(map(repr, p.levels), " "))")
+    function parse_esc(s::State) :: Char
+        if s.eof
+            errorexpecting(s, "escape character")
+        else
+            c = s.char
+            c in ('"', '\'', '\\', '%') ? (inc!(s); c) :
+            c == '0' ? (inc!(s); '\0') :
+            c == 'a' ? (inc!(s); '\a') :
+            c == 'b' ? (inc!(s); '\b') :
+            c == 'e' ? (inc!(s); '\e') :
+            c == 'f' ? (inc!(s); '\f') :
+            c == 'n' ? (inc!(s); '\n') :
+            c == 'r' ? (inc!(s); '\r') :
+            c == 't' ? (inc!(s); '\t') :
+            c == 'v' ? (inc!(s); '\v') :
+            errorexpecting(s, "escape character")
+        end
+    end
+
+    function parse_string(s::State, io::IO) :: Nothing
+        if !s.eof
+            if s.char in ('"', '\'')
+                q = s.char
+                inc!(s)
+                while true
+                    if s.eof
+                        errorexpecting(s, "character")
+                    else
+                        if s.char == q
+                            inc!(s)
+                            return
+                        elseif s.char == '\\'
+                            inc!(s)
+                            write(io, parse_esc(s))
+                        elseif s.char in ('\n', '\t')
+                            errorexpecting(s, "character")
+                        else
+                            write(io, s.char)
+                            inc!(s)
+                        end
+                    end
+                end
+            elseif israwchar(s.char)
+                write(io, s.char)
+                inc!(s)
+                while !s.eof && israwchar(s.char)
+                    write(io, s.char)
+                    inc!(s)
+                end
+                return
+            end
+        end
+        errorexpecting(s, "string")
+    end
+
+    function parse_string(s::State) :: String
+        io = IOBuffer()
+        parse_string(s, io)
+        return String(take!(io))
+    end
+
+    function parse_header_line(s::State) :: Union{Nothing, ARFFHeaderItem}
+        skipspace!(s)
+        r = nothing
+        if maybeskip!(s, '@')
+            if maybeskip!(s, ('d', 'D'))
+                skip!(s, ('a', 'A'), ('t', 'T'), ('a', 'A'))
+                r = ARFFDataStart()
+            elseif maybeskip!(s, ('a', 'A'))
+                skip!(s, ('t', 'T'), ('t', 'T'), ('r', 'R'), ('i', 'I'), ('b', 'B'), ('u', 'U'), ('t', 'T'), ('e', 'E'))
+                skipspace!(s)
+                name = parse_string(s)
+                skipspace!(s)
+                tp = parse_type(s)
+                r = ARFFAttribute(name, tp)
+            elseif maybeskip!(s, ('r', 'R'))
+                skip!(s, ('e', 'E'), ('l', 'L'), ('a', 'A'), ('t', 'T'), ('i', 'I'), ('o', 'O'), ('n', 'N'))
+                skipspace!(s)
+                name = parse_string(s)
+                r = ARFFRelation(name)
+            else
+                errorexpecting(s, "\"data\", \"attribute\" or \"relation\"")
+            end
+            skipspace!(s)
+        end
+        s.eof || skipnewline!(s)
+        return r
+    end
+
+    function parse_header(s::State) :: ARFFHeader
+        relation = missing
+        attributes = ARFFAttribute[]
+        while !s.eof
+            h = parse_header_line(s)
+            if h === nothing
+                # blank line
+            elseif h isa ARFFRelation
+                relation === missing || error(s, "@relation seen twice")
+                relation = h.name
+            elseif h isa ARFFAttribute
+                relation === missing && error(s, "@relation required before @attribute")
+                push!(attributes, h)
+            elseif h isa ARFFDataStart
+                relation === missing && error(s, "@relation required before @data")
+                return ARFFHeader(relation, attributes)
+            else
+                error(s, "INTERNAL ERROR")
+            end
+        end
+        error(s, "reached end of file before seeing @data")
+    end
+
+    """
+        parse_data(s::State, ncols::Int, io::IO, idxs::Vector{Int}, maxbytes::Int=1)
+
+    Parse data items, expecting `ncols` items per row.
+
+    For each item encountered, print "!" followed by the string content of the item to `io`
+    and append the position to `idxs`. If the item is missing, instead print "?" to `io`.
+    """
+    function parse_data(s::State, ncols::Int, io::IO, idxs::Vector{Int}, maxbytes::Int=1_000_000) :: Nothing
+        idx0 = position(io)
+        while position(io) - idx0 < maxbytes
+            skipspace!(s)
+            s.eof && break
+            if s.char ∉ ('\n', '\r')
+                for n in 1:ncols
+                    if maybeskip!(s, '?')
+                        print(io, '?')
+                    else
+                        print(io, '!')
+                        parse_string(s, io)
+                    end
+                    skipspace!(s)
+                    push!(idxs, position(io))
+                    if n < ncols
+                        skip!(s, ',')
+                        skipspace!(s)
+                    end
+                end
+            end
+            s.eof || skipnewline!(s)
+        end
+    end
+
+end
 
 """
     parse_javadateformat(java::AbstractString)
@@ -390,7 +396,7 @@ function parse_javadateformat(java::AbstractString)
 end
 
 """
-    ARFFReader{names, types}
+    ARFFReader
 
 An object holding an IO stream of an ARFF file, used to access its data.
 
@@ -402,78 +408,113 @@ It has the following functionality:
 - `read!(xs, r)` reads up to `length(xs)` rows into the given vector, returning the number of rows read.
 - `close(r)` closes the underlying IO stream, unless it was created with `own=false`.
 - `eof(r)` tests whether the IO stream is at the end.
-- `thenclose(f, r)` calls `f(r)` and ensures `r` is closed afterwards.
 - Iteration yields rows of `r`.
 - It satisfies the `Tables.jl` interface, so e.g. `DataFrame(r)` does what you think.
 """
-struct ARFFReader{names, types, Parsers, IOType}
-    io :: IOType
+struct ARFFReader{IO}
+    # parsing
+    state :: Parsing.State{IO}
     own_io :: Bool
     header :: ARFFHeader
-    parsers :: Parsers
-    lineno :: Base.RefValue{Int}
+    # columns
+    colnames :: Vector{Symbol} # name
+    collookup :: Dict{Symbol,Int} # inverse of i->colnames[i]
+    colkinds :: Vector{Symbol} # :N, :S, :D, :C (numeric, string, date, categorical)
+    colidxs :: Vector{Int} # this is the idxth column of its kind
+    colmissidxs :: Vector{Int} # this is the idxth column which allows missing values
+    coltypes :: Vector{Type} # combines kind and missing
+    pools :: Vector{CategoricalPool{String,UInt32}}
+    dateformats :: Vector{DateFormat}
+    # data
+    databuf :: IOBuffer
+    datastr :: Base.RefValue{String}
+    dataidxs :: Vector{Int}
 end
 
-Base.close(r::ARFFReader) =
-    r.own_io ? close(r.io) : nothing
+Base.close(r::ARFFReader) = r.own_io ? close(r.state.io) : nothing
 
-Base.eof(r::ARFFReader) =
-    eof(r.io)
+Base.eof(r::ARFFReader) = eof(r.state.io)
 
 """
-    loadstreaming(io::IO, own=false; [missingcols=true])
-    loadstreaming(filename::AbstractString; [missingcols=true])
+    loadstreaming(io::IO, own=false; [missingcols=true], [missingnan=false], [categorical=true])
+    loadstreaming(filename::AbstractString; ...)
 
 An [`ARFFReader`](@ref) object for reading the given ARFF file one record at a time.
 
 Option `missingcols` specifies which columns can contain missing data. It can be `true` (all
 columns, the default), `false` (no columns), a set/vector of column names, a single column
 name, or a function taking a column name and returning true or false.
-"""
-loadstreaming(io::IO, own::Bool=false; opts...) =
-    loadstreaming(io, own, parse_header(io)...; opts...)
 
-function loadstreaming(io::IO, own::Bool, header::ARFFHeader, lineno::Integer; missingcols=true, missingnan::Bool=false, categorical::Bool=true)
+Option `missingnan` specifies whether or not to convert missing values in numeric columns to
+`NaN`. This is equivalent to excluding these columns in `missingcols`.
+
+Option `categorical` specifies whether or not to convert nominal columns to `CategoricalValue`
+or `String`.
+"""
+function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bool=false, categorical::Bool=true)
     missingcols =
         missingcols === true ? c->true :
         missingcols === false ? c->false :
         missingcols isa Union{AbstractSet,AbstractVector} ? ∈(missingcols) :
         missingcols isa Symbol ? ==(missingcols) :
         missingcols
-    names = Symbol[]
-    types = Type[]
-    parsers = []
+    state = Parsing.State(io)
+    header = Parsing.parse_header(state)
+    numnumeric = 0
+    numstring = 0
+    numdate = 0
+    numcategorical = 0
+    nummissing = 0
+    colnames = Symbol[]
+    colkinds = Symbol[]
+    colidxs = Int[]
+    colmissidxs = Int[]
+    coltypes = Type[]
+    pools = CategoricalPool{String,UInt32}[]
+    dateformats = DateFormat[]
     for a in header.attributes
         n = Symbol(a.name)
         if a.type isa ARFFNumericType
+            k = :N
             t = Float64
-            p = nothing
+            i = (numnumeric += 1)
         elseif a.type isa ARFFStringType
+            k = :S
             t = String
-            p = nothing
+            i = (numstring += 1)
         elseif a.type isa ARFFNominalType
             if categorical
+                k = :C
                 t = CategoricalValue{String,UInt32}
-                p = CategoricalPool{String,UInt32}(a.type.classes)
+                i = (numcategorical += 1)
+                push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
             else
+                k = :S
                 t = String
-                p = nothing
+                i = (numstring += 1)
             end
         elseif a.type isa ARFFDateType
+            k = :D
             t = DateTime
-            p = parse_javadateformat(a.type.format)
+            i = (numdate += 1)
+            push!(dateformats, parse_javadateformat(a.type.format))
         else
             error("not implemented")
         end
         if missingcols(n) && !(missingnan && a.type isa ARFFNumericType)
+            m = true
             t = Union{t, Missing}
+        else
+            m = false
         end
-        push!(names, n)
-        push!(types, t)
-        push!(parsers, p)
+        push!(colnames, n)
+        push!(colkinds, k)
+        push!(coltypes, t)
+        push!(colidxs, i)
+        push!(colmissidxs, m ? (nummissing += 1) : 0)
     end
-    ps = Tuple(parsers)
-    ARFFReader{Tuple(names), Tuple{types...}, typeof(ps), typeof(io)}(io, own, header, ps, Ref(Int(lineno)))
+    collookup = Dict{Symbol,Int}(n=>i for (i,n) in enumerate(colnames))
+    ARFFReader{typeof(io)}(state, own, header, colnames, collookup, colkinds, colidxs, colmissidxs, coltypes, pools, dateformats, IOBuffer(), Ref(""), Int[])
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -486,7 +527,14 @@ The first form is equivalent to `f(loadstreaming(file, ...))` but ensures that t
 
 The second form is equivalent to `load(read, file, ...)`, which loads the entire ARFF file as a vector of named tuples.
 """
-load(f::Base.Callable, args...; opts...) = thenclose(f, loadstreaming(args...; opts...))
+function load(f::Base.Callable, args...; opts...)
+    r = loadstreaming(args...; opts...)
+    try
+        return f(r)
+    finally
+        close(r)
+    end
+end
 
 """
     load_header(file, ...)
@@ -496,41 +544,152 @@ Equivalent to `load(r->r.header, file, ...)`, which loads just the header from t
 load_header(fn::Union{IO,AbstractString}, args...; opts...) = load(r->r.header, fn, args...; opts...)
 load(fn::Union{IO,AbstractString}, args...; opts...) = load(read, fn, args...; opts...)
 
-thenclose(f, r::ARFFReader) =
-    try
-        f(r)
-    finally
-        close(r)
-    end
+"""
+    ARFFRow
 
-@generated function _parse_entries(r::ARFFReader{names, types}, row) where {names, types}
-    Ts = types.parameters
-    N = length(Ts)
-    xs = [Symbol("x", i) for i in 1:N]
-    quote
-        @assert length(row) == $N
-        $([:(@inbounds $(xs[i]) = parse_entry($(Ts[i]), r.parsers[$i], row[$i])) for i in 1:N]...)
-        NamedTuple{$names, $types}(($(xs...),))
+A row of an ARFF data set.
+"""
+struct ARFFRow <: Tables.AbstractRow
+    # metadata
+    colnames :: Vector{Symbol}
+    collookup :: Dict{Symbol,Int}
+    colkinds :: Vector{Symbol}
+    colidxs :: Vector{Int}
+    colmissidxs :: Vector{Int}
+    # data
+    missings :: BitVector
+    numbers :: Vector{Float64}
+    strings :: Vector{String}
+    dates :: Vector{DateTime}
+    categoricals :: Vector{CategoricalValue{String,UInt32}}
+end
+
+Base.@propagate_inbounds function Tables.getcolumn(row::ARFFRow, i::Int)
+    # check if the entry is missing
+    missidx = getfield(row, :colmissidxs)[i]
+    if missidx > 0
+        if getfield(row, :missings)[missidx]
+            return missing
+        end
+    end
+    # otherwise get the value
+    kind = getfield(row, :colkinds)[i]
+    idx = getfield(row, :colidxs)[i]
+    if kind == :N
+        return getfield(row, :numbers)[idx]
+    elseif kind == :S
+        return getfield(row, :strings)[idx]
+    elseif kind == :D
+        return getfield(row, :dates)[idx]
+    elseif kind == :C
+        return getfield(row, :categoricals)[idx]
+    else
+        @assert false
     end
 end
+
+Base.@propagate_inbounds function Tables.getcolumn(row::ARFFRow, ::Type{T}, i::Int, name::Symbol) where {T}
+    # check if the entry is missing
+    if Missing <: T
+        missidx = getfield(row, :colmissidxs)[i]
+        if missidx > 0
+            if getfield(row, :missings)[missidx]
+                return missing
+            end
+        end
+    end
+    # otherwise get the value
+    kind = getfield(row, :colkinds)[i]
+    idx = getfield(row, :colidxs)[i]
+    if Float64 <: T && kind == :N
+        return getfield(row, :numbers)[idx]
+    elseif String <: T && kind == :S
+        return getfield(row, :strings)[idx]
+    elseif DateTime <: T && kind == :D
+        return getfield(row, :dates)[idx]
+    elseif CategoricalValue{String,UInt32} <: T && kind == :C
+        return getfield(row, :categoricals)[idx]
+    else
+        @assert false
+    end
+end
+
+Base.@propagate_inbounds Tables.getcolumn(row::ARFFRow, name::Symbol) = Tables.getcolumn(row, getfield(row, :collookup)[name])
+
+Tables.columnnames(row::ARFFRow) = getfield(row, :colnames)
 
 """
     nextrow(r::ARFFReader{names, types}) :: Union{Nothing, NamedTuple{names, types}}
 
 The next row of data from the given `ARFFReader`, or `nothing` if everything has been read.
 """
-function nextrow(r::ARFFReader{names, types}) where {names, types}
-    N = length(r.parsers)
-    while !eof(r.io)
-        r.lineno[] += 1
-        x = Parsing.parse_data_line(Parsing.State(readline(r.io), 1, r.lineno[]))
-        if length(x) == N
-            return _parse_entries(r, x)
-        elseif !(isempty(x))
-            error("line $(r.lineno[]): expected $N fields, found $(length(x))")
+function nextrow(r::ARFFReader) :: Union{Nothing, ARFFRow}
+    # ensure the data buffer has data
+    if length(r.dataidxs) ≤ 1
+        empty!(r.dataidxs)
+        push!(r.dataidxs, position(r.databuf))
+        Parsing.parse_data(r.state, length(r.colnames), r.databuf, r.dataidxs)
+        if length(r.dataidxs) ≤ 1
+            return nothing
+        end
+        r.datastr[] = String(take!(r.databuf))
+    end
+    # now parse a row of data
+    str = r.datastr[]
+    idxs = r.dataidxs
+    missings = BitVector()
+    numbers = Float64[]
+    strings = String[]
+    dates = DateTime[]
+    categoricals = CategoricalValue{String,UInt32}[]
+    for (name, kind, missidx) in zip(r.colnames, r.colkinds, r.colmissidxs)
+        i0 = @inbounds popfirst!(idxs)
+        c = @inbounds str[i0+1]
+        if c == '?'
+            if missidx > 0
+                push!(missings, true)
+            elseif kind != :N
+                error("found missing data in column $name")
+            end
+            if kind == :N
+                push!(numbers, NaN)
+            elseif kind == :S
+                push!(strings, "")
+            elseif kind == :D
+                resize!(dates, length(dates)+1)
+            elseif kind == :C
+                resize!(categoricals, length(categoricals)+1)
+            else
+                @assert false
+            end
+        elseif c == '!'
+            if missidx > 0
+                push!(missings, false)
+            end
+            i1 = @inbounds idxs[1]
+            substr = SubString(str, i0+2:prevind(str, i1+1))
+            if kind == :N
+                push!(numbers, parse(Float64, substr))
+            elseif kind == :S
+                push!(strings, substr)
+            elseif kind == :D
+                format = r.dateformats[length(dates)+1]
+                push!(dates, DateTime(substr, format))
+            elseif kind == :C
+                pool = r.pools[length(categoricals)+1]
+                if haskey(pool.invindex, substr)
+                    push!(categoricals, pool[get(pool, substr)])
+                else
+                    error("invalid nominal $(repr(substr)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
+                end
+            else
+                @assert false
+            end
+        else
+            @assert false
         end
     end
-    nothing
+    return ARFFRow(r.colnames, r.collookup, r.colkinds, r.colidxs, r.colmissidxs, missings, numbers, strings, dates, categoricals)
 end
 
 function Base.read!(r::ARFFReader, x::AbstractVector)
@@ -547,8 +706,8 @@ function Base.read!(r::ARFFReader, x::AbstractVector)
     return n
 end
 
-function Base.read(r::ARFFReader{names, types}) where {names, types}
-    x = NamedTuple{names, types}[]
+function Base.read(r::ARFFReader)
+    x = ARFFRow[]
     while true
         z = nextrow(r)
         if z === nothing
@@ -559,8 +718,8 @@ function Base.read(r::ARFFReader{names, types}) where {names, types}
     end
 end
 
-function Base.read(r::ARFFReader{names, types}, n::Integer) where {names, types}
-    x = Vector{NamedTuple{names, types}}(undef, n)
+function Base.read(r::ARFFReader, n::Integer)
+    x = Vector{ARFFRow}(undef, n)
     n = read!(r, x)
     resize!(x, n)
     x
@@ -568,27 +727,29 @@ end
 
 ### SAVING
 
-function write_datum(io::IO, x::Union{String,SubString{String}})
-    write(io, UInt8('"'))
-    for c in codeunits(x)
-        c == 0x00 ? write(io, "\\0") :
-        c == UInt8('"') ? write(io, "\\\"") :
-        c == UInt8('\\') ? write(io, "\\\\") :
-        c == UInt8('\a') ? write(io, "\\a") :
-        c == UInt8('\b') ? write(io, "\\b") :
-        c == UInt8('\e') ? write(io, "\\e") :
-        c == UInt8('\f') ? write(io, "\\f") :
-        c == UInt8('\n') ? write(io, "\\n") :
-        c == UInt8('\r') ? write(io, "\\r") :
-        c == UInt8('\t') ? write(io, "\\t") :
-        c == UInt8('\v') ? write(io, "\\v") :
-        c < 0x80 ? write(io, c) :
-        error("string is not ASCII: $(repr(String(x)))")
+function write_datum(io::IO, x::AbstractString)
+    if eltype(x) != Char
+        x = convert(String, x)
     end
-    write(io, UInt8('"'))
+    write(io, '"')
+    for c in x
+        c == '\0' ? write(io, "\\0") :
+        c == '"'  ? write(io, "\\\"") :
+        c == '\\' ? write(io, "\\\\") :
+        c == '\a' ? write(io, "\\a") :
+        c == '\b' ? write(io, "\\b") :
+        c == '\e' ? write(io, "\\e") :
+        c == '\f' ? write(io, "\\f") :
+        c == '\n' ? write(io, "\\n") :
+        c == '\r' ? write(io, "\\r") :
+        c == '\t' ? write(io, "\\t") :
+        c == '\v' ? write(io, "\\v") :
+        write(io, c)
+    end
+    write(io, '"')
 end
-write_datum(io::IO, x::AbstractString) = write_datum(io, convert(String, x))
 write_datum(io::IO, x::Union{Int8,UInt8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128,BigInt,Float16,Float32,Float64,BigFloat}) = print(io, x)
+write_datum(io::IO, x::Bool) = print(io, x ? "1" : "0")
 write_datum(io::IO, x::Integer) = write_datum(io, convert(BigInt, x))
 write_datum(io::IO, x::Real) = write_datum(io, convert(BigFloat, x))
 write_datum(io::IO, x::DateTime) = write_datum(io, Dates.format(x, dateformat"YYYY-mm-dd\THH:MM:SS.sss"))
@@ -651,7 +812,7 @@ function save(io::IO, df;
         write_datum(io, string(name))
         print(io, " ")
         if type <: Missing
-            println(io, " {}")
+            println(io, "{}")
         elseif type <: Union{Real, Missing}
             println(io, "NUMERIC")
         elseif type <: Union{AbstractString, Missing}
@@ -686,6 +847,8 @@ save(filename::AbstractString, df; opts...) = open(io->save(io, df; opts...), fi
 
 Base.IteratorSize(::Type{<:ARFFReader}) = Base.SizeUnknown()
 
+Base.eltype(::Type{<:ARFFReader}) = ARFFRow
+
 function Base.iterate(r::ARFFReader, ::Nothing=nothing)
     x = nextrow(r)
     x === nothing ? nothing : (x, nothing)
@@ -696,7 +859,7 @@ end
 Tables.istable(r::ARFFReader) = true
 Tables.rowaccess(r::ARFFReader) = true
 Tables.rows(r::ARFFReader) = r
-Tables.schema(::ARFFReader{names, types}) where {names, types} = Tables.Schema(names, types)
+Tables.schema(r::ARFFReader) = Tables.Schema(r.colnames, r.coltypes)
 
 ### FILEIO INTEGRATION
 

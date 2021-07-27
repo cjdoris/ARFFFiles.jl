@@ -27,12 +27,12 @@ ARFFFiles.save("mytable.arff", df)
 
 ## Loading
 
-- `load(file)` loads the table in the given file as a vector of named tuples.
+- `load(file)` loads the table in the given file as a vector of `ARFFRow`, which is like a named tuple.
 - `load(io, [own=false])` loads the table from the given io stream.
 - `load(f, ...)` is equivalent to `f(loadstreaming(...))` but ensures the file is closed afterwards.
 - `loadstreaming(io, [own=false])` returns a `ARFFReader` object `r`:
     - `r.header` contains the header parsed from `io`.
-    - `read(r)` reads the whole table as a vector of named tuples.
+    - `read(r)` reads the whole table as a vector of `ARFFRow`.
     - `read(r, n)` reads up to `n` rows.
     - `read!(r, x)` reads into the pre-allocated vector `x` and returns the number of rows read.
     - `close(r)` closes the underlying io stream, unless `own=false`.
