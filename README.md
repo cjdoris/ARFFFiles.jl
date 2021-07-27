@@ -17,7 +17,7 @@ To load an ARFF file as a `DataFrame`:
 using ARFFFiles, DataFrames
 df = ARFFFiles.load(DataFrame, "mytable.arff")
 ```
-Replace `DataFrame` with your favourite table type, or leave it out to get a vector of named tuples.
+Replace `DataFrame` with your favourite table type, or leave it out to get a vector of rows.
 
 To save any Tables.jl-compatible table:
 ```julia
