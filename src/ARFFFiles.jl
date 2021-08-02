@@ -53,6 +53,9 @@ struct ARFFHeader
     attributes :: Vector{ARFFAttribute}
 end
 
+const ARFFTable = Tables.DictColumnTable
+const ARFFRow = Tables.ColumnsRow
+
 """
     Parsing
 
@@ -394,7 +397,7 @@ mutable struct ARFFReader{IO}
     pools :: Vector{CategoricalPool{String,UInt32}}
     dateformats :: Vector{DateFormat}
     # row iteration
-    chunk :: Tables.DictColumnTable
+    chunk :: ARFFTable
     chunklen :: Int
     chunkidx :: Int
     chunkbytes :: Int
@@ -483,7 +486,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         push!(colmissidxs, m ? (nummissing += 1) : 0)
     end
     collookup = Dict{Symbol,Int}(n=>i for (i,n) in enumerate(colnames))
-    ARFFReader{typeof(io)}(state, own, header, colnames, collookup, colkinds, colidxs, colmissidxs, coltypes, pools, dateformats, Tables.DictColumnTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(state, own, header, colnames, collookup, colkinds, colidxs, colmissidxs, coltypes, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -518,7 +521,7 @@ load(fn::Union{IO,AbstractString}, args...; opts...) = load(readcolumns, fn, arg
 
 The next row of data from the given `ARFFReader`, or `nothing` if everything has been read.
 """
-function nextrow(r::ARFFReader) :: Union{Nothing,Tables.ColumnsRow}
+function nextrow(r::ARFFReader) :: Union{Nothing,ARFFRow}
     while r.chunkidx ≥ r.chunklen
         eof(r.state.io) && return nothing
         r.chunk = readcolumns(r, maxbytes=r.chunkbytes)
@@ -526,7 +529,7 @@ function nextrow(r::ARFFReader) :: Union{Nothing,Tables.ColumnsRow}
         r.chunkidx = 0
     end
     r.chunkidx += 1
-    return Tables.ColumnsRow(r.chunk, r.chunkidx)
+    return ARFFRow(r.chunk, r.chunkidx)
 end
 
 function Base.read!(r::ARFFReader, x::AbstractVector)
@@ -544,7 +547,7 @@ function Base.read!(r::ARFFReader, x::AbstractVector)
 end
 
 function Base.read(r::ARFFReader)
-    x = Tables.ColumnsRow[]
+    x = ARFFRow[]
     while true
         z = nextrow(r)
         if z === nothing
@@ -556,7 +559,7 @@ function Base.read(r::ARFFReader)
 end
 
 function Base.read(r::ARFFReader, n::Integer)
-    x = Vector{Tables.ColumnsRow}(undef, n)
+    x = Vector{ARFFRow}(undef, n)
     n = read!(r, x)
     resize!(x, n)
     x
@@ -628,7 +631,7 @@ function readcolumns(
     date_opts_dq=[parse_opts('"', df) for df in r.dateformats],
     maxbytes=nothing,
     chunkbytes=1<<20,
-)
+) :: ARFFTable
     # initialize columns
     colnames = r.colnames
     colkinds = r.colkinds
@@ -857,7 +860,7 @@ function readcolumns(
     # construct the output table
     schema = Tables.Schema(r.colnames, r.coltypes)
     dict = Dict(zip(colnames, cols))
-    return Tables.DictColumnTable(schema, dict)
+    return ARFFTable(schema, dict)
 end
 
 ### SAVING

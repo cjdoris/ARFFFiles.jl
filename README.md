@@ -17,7 +17,7 @@ To load an ARFF file as a `DataFrame`:
 using ARFFFiles, DataFrames
 df = ARFFFiles.load(DataFrame, "mytable.arff")
 ```
-Replace `DataFrame` with your favourite table type, or leave it out to get a vector of rows.
+Replace `DataFrame` with your favourite table type, or leave it out to get a `ARFFTable`.
 
 To save any Tables.jl-compatible table:
 ```julia
@@ -27,13 +27,13 @@ ARFFFiles.save("mytable.arff", df)
 
 ## Loading
 
-- `load(file)` loads the table in the given file.
+- `load(file)` loads the table in the given file as an `ARFFTable`.
 - `load(io, [own=false])` loads the table from the given IO stream.
 - `load(f, ...)` is equivalent to `f(loadstreaming(...))` but ensures the file is closed afterwards.
 - `loadstreaming(io, [own=false])` returns a `ARFFReader` object `r`:
     - It satisfies the `Tables.jl` interface, so can be materialized as a table.
     - `r.header` contains the header parsed from `io`.
-    - Iteration yields rows.
+    - Iteration yields rows of type `ARFFRow`.
     - `read(r)` reads the whole table as a vector of rows.
     - `read(r, n)` reads up to `n` rows.
     - `read!(r, x)` reads into the pre-allocated vector `x` and returns the number of rows read.
