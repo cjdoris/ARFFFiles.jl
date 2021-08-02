@@ -1,7 +1,6 @@
 module ARFFFiles
 
-using Base: Char, String, NamedTuple
-using Dates, Tables, CategoricalArrays, FileIO
+using Dates, Tables, CategoricalArrays, FileIO, Parsers
 
 export ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader, ARFFReader, ARFFRow
 
@@ -57,7 +56,7 @@ end
 """
     Parsing
 
-Sub-module handling low-level parsing of lines of ARFF files. Main routines are [`parse_header_line`](@ref) and [`parse_data_line`](@ref).
+Sub-module handling low-level parsing of lines of ARFF files.
 """
 module Parsing
 
@@ -291,39 +290,6 @@ module Parsing
         error(s, "reached end of file before seeing @data")
     end
 
-    """
-        parse_data(s::State, ncols::Int, io::IO, idxs::Vector{Int}, maxbytes::Int=1)
-
-    Parse data items, expecting `ncols` items per row.
-
-    For each item encountered, print "!" followed by the string content of the item to `io`
-    and append the position to `idxs`. If the item is missing, instead print "?" to `io`.
-    """
-    function parse_data(s::State, ncols::Int, io::IO, idxs::Vector{Int}, maxbytes::Int=1_000_000) :: Nothing
-        idx0 = position(io)
-        while position(io) - idx0 < maxbytes
-            skipspace!(s)
-            s.eof && break
-            if s.char ∉ ('\n', '\r')
-                for n in 1:ncols
-                    if maybeskip!(s, '?')
-                        print(io, '?')
-                    else
-                        print(io, '!')
-                        parse_string(s, io)
-                    end
-                    skipspace!(s)
-                    push!(idxs, position(io))
-                    if n < ncols
-                        skip!(s, ',')
-                        skipspace!(s)
-                    end
-                end
-            end
-            s.eof || skipnewline!(s)
-        end
-    end
-
 end
 
 """
@@ -395,6 +361,8 @@ function parse_javadateformat(java::AbstractString)
     return DateFormat(String(take!(io)))
 end
 
+const CatType = CategoricalValue{String, UInt32}
+
 """
     ARFFReader
 
@@ -411,7 +379,7 @@ It has the following functionality:
 - Iteration yields rows of `r`.
 - It satisfies the `Tables.jl` interface, so e.g. `DataFrame(r)` does what you think.
 """
-struct ARFFReader{IO}
+mutable struct ARFFReader{IO}
     # parsing
     state :: Parsing.State{IO}
     own_io :: Bool
@@ -425,10 +393,11 @@ struct ARFFReader{IO}
     coltypes :: Vector{Type} # combines kind and missing
     pools :: Vector{CategoricalPool{String,UInt32}}
     dateformats :: Vector{DateFormat}
-    # data
-    databuf :: IOBuffer
-    datastr :: Base.RefValue{String}
-    dataidxs :: Vector{Int}
+    # row iteration
+    chunk :: Tables.DictColumnTable
+    chunklen :: Int
+    chunkidx :: Int
+    chunkbytes :: Int
 end
 
 Base.close(r::ARFFReader) = r.own_io ? close(r.state.io) : nothing
@@ -451,7 +420,7 @@ Option `missingnan` specifies whether or not to convert missing values in numeri
 Option `categorical` specifies whether or not to convert nominal columns to `CategoricalValue`
 or `String`.
 """
-function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bool=false, categorical::Bool=true)
+function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
     missingcols =
         missingcols === true ? c->true :
         missingcols === false ? c->false :
@@ -485,7 +454,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         elseif a.type isa ARFFNominalType
             if categorical
                 k = :C
-                t = CategoricalValue{String,UInt32}
+                t = CatType
                 i = (numcategorical += 1)
                 push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
             else
@@ -514,7 +483,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         push!(colmissidxs, m ? (nummissing += 1) : 0)
     end
     collookup = Dict{Symbol,Int}(n=>i for (i,n) in enumerate(colnames))
-    ARFFReader{typeof(io)}(state, own, header, colnames, collookup, colkinds, colidxs, colmissidxs, coltypes, pools, dateformats, IOBuffer(), Ref(""), Int[])
+    ARFFReader{typeof(io)}(state, own, header, colnames, collookup, colkinds, colidxs, colmissidxs, coltypes, pools, dateformats, Tables.DictColumnTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -525,7 +494,7 @@ loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts.
 
 The first form is equivalent to `f(loadstreaming(file, ...))` but ensures that the file is closed afterwards.
 
-The second form is equivalent to `load(read, file, ...)`, which loads the entire ARFF file as a vector of named tuples.
+The second form is equivalent to `load(readcolumns, file, ...)`, which loads the entire ARFF file as a table.
 """
 function load(f::Base.Callable, args...; opts...)
     r = loadstreaming(args...; opts...)
@@ -542,154 +511,22 @@ end
 Equivalent to `load(r->r.header, file, ...)`, which loads just the header from the given file as a `ARFFHeader`.
 """
 load_header(fn::Union{IO,AbstractString}, args...; opts...) = load(r->r.header, fn, args...; opts...)
-load(fn::Union{IO,AbstractString}, args...; opts...) = load(read, fn, args...; opts...)
-
-"""
-    ARFFRow
-
-A row of an ARFF data set.
-"""
-struct ARFFRow <: Tables.AbstractRow
-    # metadata
-    colnames :: Vector{Symbol}
-    collookup :: Dict{Symbol,Int}
-    colkinds :: Vector{Symbol}
-    colidxs :: Vector{Int}
-    colmissidxs :: Vector{Int}
-    # data
-    missings :: BitVector
-    numbers :: Vector{Float64}
-    strings :: Vector{String}
-    dates :: Vector{DateTime}
-    categoricals :: Vector{CategoricalValue{String,UInt32}}
-end
-
-Base.@propagate_inbounds function Tables.getcolumn(row::ARFFRow, i::Int)
-    # check if the entry is missing
-    missidx = getfield(row, :colmissidxs)[i]
-    if missidx > 0
-        if getfield(row, :missings)[missidx]
-            return missing
-        end
-    end
-    # otherwise get the value
-    kind = getfield(row, :colkinds)[i]
-    idx = getfield(row, :colidxs)[i]
-    if kind == :N
-        return getfield(row, :numbers)[idx]
-    elseif kind == :S
-        return getfield(row, :strings)[idx]
-    elseif kind == :D
-        return getfield(row, :dates)[idx]
-    elseif kind == :C
-        return getfield(row, :categoricals)[idx]
-    else
-        @assert false
-    end
-end
-
-Base.@propagate_inbounds function Tables.getcolumn(row::ARFFRow, ::Type{T}, i::Int, name::Symbol) where {T}
-    # check if the entry is missing
-    if Missing <: T
-        missidx = getfield(row, :colmissidxs)[i]
-        if missidx > 0
-            if getfield(row, :missings)[missidx]
-                return missing
-            end
-        end
-    end
-    # otherwise get the value
-    kind = getfield(row, :colkinds)[i]
-    idx = getfield(row, :colidxs)[i]
-    if Float64 <: T && kind == :N
-        return getfield(row, :numbers)[idx]
-    elseif String <: T && kind == :S
-        return getfield(row, :strings)[idx]
-    elseif DateTime <: T && kind == :D
-        return getfield(row, :dates)[idx]
-    elseif CategoricalValue{String,UInt32} <: T && kind == :C
-        return getfield(row, :categoricals)[idx]
-    else
-        @assert false
-    end
-end
-
-Base.@propagate_inbounds Tables.getcolumn(row::ARFFRow, name::Symbol) = Tables.getcolumn(row, getfield(row, :collookup)[name])
-
-Tables.columnnames(row::ARFFRow) = getfield(row, :colnames)
+load(fn::Union{IO,AbstractString}, args...; opts...) = load(readcolumns, fn, args...; opts...)
 
 """
     nextrow(r::ARFFReader{names, types}) :: Union{Nothing, NamedTuple{names, types}}
 
 The next row of data from the given `ARFFReader`, or `nothing` if everything has been read.
 """
-function nextrow(r::ARFFReader) :: Union{Nothing, ARFFRow}
-    # ensure the data buffer has data
-    if length(r.dataidxs) ≤ 1
-        empty!(r.dataidxs)
-        push!(r.dataidxs, position(r.databuf))
-        Parsing.parse_data(r.state, length(r.colnames), r.databuf, r.dataidxs)
-        if length(r.dataidxs) ≤ 1
-            return nothing
-        end
-        r.datastr[] = String(take!(r.databuf))
+function nextrow(r::ARFFReader) :: Union{Nothing,Tables.ColumnsRow}
+    while r.chunkidx ≥ r.chunklen
+        eof(r.state.io) && return nothing
+        r.chunk = readcolumns(r, maxbytes=r.chunkbytes)
+        r.chunklen = Tables.rowcount(r.chunk)
+        r.chunkidx = 0
     end
-    # now parse a row of data
-    str = r.datastr[]
-    idxs = r.dataidxs
-    missings = BitVector()
-    numbers = Float64[]
-    strings = String[]
-    dates = DateTime[]
-    categoricals = CategoricalValue{String,UInt32}[]
-    for (name, kind, missidx) in zip(r.colnames, r.colkinds, r.colmissidxs)
-        i0 = @inbounds popfirst!(idxs)
-        c = @inbounds str[i0+1]
-        if c == '?'
-            if missidx > 0
-                push!(missings, true)
-            elseif kind != :N
-                error("found missing data in column $name")
-            end
-            if kind == :N
-                push!(numbers, NaN)
-            elseif kind == :S
-                push!(strings, "")
-            elseif kind == :D
-                resize!(dates, length(dates)+1)
-            elseif kind == :C
-                resize!(categoricals, length(categoricals)+1)
-            else
-                @assert false
-            end
-        elseif c == '!'
-            if missidx > 0
-                push!(missings, false)
-            end
-            i1 = @inbounds idxs[1]
-            substr = SubString(str, i0+2:prevind(str, i1+1))
-            if kind == :N
-                push!(numbers, parse(Float64, substr))
-            elseif kind == :S
-                push!(strings, substr)
-            elseif kind == :D
-                format = r.dateformats[length(dates)+1]
-                push!(dates, DateTime(substr, format))
-            elseif kind == :C
-                pool = r.pools[length(categoricals)+1]
-                if haskey(pool.invindex, substr)
-                    push!(categoricals, pool[get(pool, substr)])
-                else
-                    error("invalid nominal $(repr(substr)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
-                end
-            else
-                @assert false
-            end
-        else
-            @assert false
-        end
-    end
-    return ARFFRow(r.colnames, r.collookup, r.colkinds, r.colidxs, r.colmissidxs, missings, numbers, strings, dates, categoricals)
+    r.chunkidx += 1
+    return Tables.ColumnsRow(r.chunk, r.chunkidx)
 end
 
 function Base.read!(r::ARFFReader, x::AbstractVector)
@@ -707,7 +544,7 @@ function Base.read!(r::ARFFReader, x::AbstractVector)
 end
 
 function Base.read(r::ARFFReader)
-    x = ARFFRow[]
+    x = Tables.ColumnsRow[]
     while true
         z = nextrow(r)
         if z === nothing
@@ -719,10 +556,308 @@ function Base.read(r::ARFFReader)
 end
 
 function Base.read(r::ARFFReader, n::Integer)
-    x = Vector{ARFFRow}(undef, n)
+    x = Vector{Tables.ColumnsRow}(undef, n)
     n = read!(r, x)
     resize!(x, n)
     x
+end
+
+parse_opts(qc, df=nothing) = Parsers.Options(sentinel=["?"], openquotechar=qc, closequotechar=qc, escapechar='\\', delim=',', quoted=true, comment="%", ignoreemptylines=true, dateformat=df)
+
+function parse_datum(::Type{T}, data::AbstractVector{UInt8}, pos::Integer=1, len::Integer=length(data)-(pos-1), opts1=parse_opts('''), opts2=parse_opts('"')) where {T}
+    # first try parsing single-quoted
+    res1 = Parsers.xparse(T, data, pos, len, opts1)
+    if Parsers.invalid(res1.code)
+        # invalid: try again
+    elseif T == String && !Parsers.quoted(res1.code) && res1.val.len > 0 && @inbounds data[res1.val.pos] == opts2.oq
+        # double quoted: try again
+    else
+        return res1
+    end
+    # now try double-quoted
+    res2 = Parsers.xparse(T, data, pos, len, opts2)
+    if T == String && !Parsers.invalid(res2.code) && !Parsers.quoted(res2.code) && res2.val.len > 0 && @inbounds data[res2.val.pos] == opts1.oq
+        # single-quoted (can't also be double-quoted)
+        @assert Parsers.invalid(res1.code)
+        return res1
+    else
+        return res2
+    end
+end
+
+function parse_escape(str)
+    if length(str) == 2
+        c = str[2]
+        c == '0' ? '\0' :
+        c == 'a' ? '\a' :
+        c == 'b' ? '\b' :
+        c == 'e' ? '\e' :
+        c == 'f' ? '\f' :
+        c == 'n' ? '\n' :
+        c == 'r' ? '\r' :
+        c == 't' ? '\t' :
+        c == 'v' ? '\v' :
+        ispunct(c) ? c :
+        error("invalid escape sequence: $(repr(str))")
+    else
+        error("backslash at end of string")
+    end
+end
+
+function get_parsed_string(data, res)
+    str = Parsers.getstring(data, Parsers.PosLen(res.val.pos, res.val.len), 0x00)
+    if Parsers.escapedstring(res.code)
+        str = replace(str, r"\\.?" => parse_escape)
+    end
+    return str
+end
+
+"""
+    readcolumns(r::ARFFReader, maxbytes=nothing)
+
+Read the data from `r` into a columnar table.
+
+By default the entire table is read. If `maxbytes` is given, approximately this many bytes
+of the input stream is read instead.
+"""
+function readcolumns(
+    r::ARFFReader;
+    opts_sq=parse_opts('''),
+    opts_dq=parse_opts('"'),
+    date_opts_sq=[parse_opts(''', df) for df in r.dateformats],
+    date_opts_dq=[parse_opts('"', df) for df in r.dateformats],
+    maxbytes=nothing,
+    chunkbytes=1<<20,
+)
+    # initialize columns
+    colnames = r.colnames
+    colkinds = r.colkinds
+    colmissidxs = r.colmissidxs
+    pools = r.pools
+    ncols = length(colnames)
+    Ncols = Vector{Float64}[]
+    NXcols = Vector{Union{Missing,Float64}}[]
+    Scols = Vector{String}[]
+    SXcols = Vector{Union{Missing,String}}[]
+    Dcols = Vector{DateTime}[]
+    DXcols = Vector{Union{Missing,DateTime}}[]
+    Ccols = Vector{CatType}[]
+    CXcols = Vector{Union{Missing,CatType}}[]
+    cols = Vector[]
+    for i in 1:ncols
+        kind = colkinds[i]
+        missidx = colmissidxs[i]
+        if kind == :N
+            if missidx == 0
+                col = Float64[]
+                push!(Ncols, col)
+                push!(cols, col)
+            else
+                col = Union{Missing,Float64}[]
+                push!(NXcols, col)
+                push!(cols, col)
+            end
+        elseif kind == :S
+            if missidx == 0
+                col = String[]
+                push!(Scols, col)
+                push!(cols, col)
+            else
+                col = Union{Missing,String}[]
+                push!(SXcols, col)
+                push!(cols, col)
+            end
+        elseif kind == :D
+            if missidx == 0
+                col = DateTime[]
+                push!(Dcols, col)
+                push!(cols, col)
+            else
+                col = Union{Missing,DateTime}[]
+                push!(DXcols, col)
+                push!(cols, col)
+            end
+        elseif kind == :C
+            if missidx == 0
+                col = CatType[]
+                push!(Ccols, col)
+                push!(cols, col)
+            else
+                col = Union{Missing,CatType}[]
+                push!(CXcols, col)
+                push!(cols, col)
+            end
+        else
+            error("Not implemented: Columns of kind $kind")
+        end
+    end
+    # reading loop
+    nrows = 0
+    nbytes = 0
+    io = r.state.io
+    function checkcode(T, code, pos, tlen, i, n)
+        if Parsers.invalid(code)
+            error("Could not parse $T at byte $pos")
+        elseif i < n ? !Parsers.delimited(code) : !(Parsers.newline(code) || Parsers.eof(code))
+            error("Expecting $(i<n ? "delimiter" : "new line") at byte $(pos+tlen)")
+        end
+    end
+    while !eof(io) && (maxbytes === nothing || nbytes < maxbytes)
+        # remeber where we started
+        offset = position(io)
+        # read a chunk
+        if chunkbytes === nothing && maxbytes === nothing
+            chunk = read(io)
+        else
+            chunk = read(io, max(0, min(chunkbytes===nothing ? typemax(Int) : chunkbytes, maxbytes===nothing ? typemax(Int) : maxbytes - nbytes)))
+        end
+        # ensure we get a whole line
+        append!(chunk, codeunits(readline(io)))
+        # read each line
+        pos = 1
+        len = length(chunk)
+        nbytes += len
+        @inbounds while pos ≤ len
+            # skip any initial whitespace
+            c = chunk[pos]
+            if c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D
+                pos += 1
+                continue
+            end
+            # skip comments
+            if c == 0x25
+                while pos ≤ len
+                    c = chunk[pos]
+                    if c == 0x0A || c == 0x0D
+                        break
+                    else
+                        pos += 1
+                    end
+                end
+                continue
+            end
+            nrows += 1
+            # sparse format
+            if c == 0x7B
+                error("sparse ARFF format not supported at byte $(pos+offset)")
+                continue
+            end
+            # dense format
+            iN = iNX = iS = iSX = iD = iDX = iC = iCX = 0
+            for i in 1:ncols
+                name = colnames[i]
+                kind = colkinds[i]
+                missidx = colmissidxs[i]
+                if kind == :N
+                    resN = parse_datum(Float64, chunk, pos, len, opts_sq, opts_dq)
+                    # @info "number" resN
+                    checkcode(Float64, resN.code, pos+offset, resN.tlen, i, ncols)
+                    pos += resN.tlen
+                    if missidx == 0
+                        iN += 1
+                        col = Ncols[iN]
+                        if Parsers.sentinel(resN.code)
+                            push!(col, NaN)
+                        else
+                            push!(col, resN.val)
+                        end
+                    else
+                        iNX += 1
+                        col = NXcols[iNX]
+                        if Parsers.sentinel(resN.code)
+                            push!(col, missing)
+                        else
+                            push!(col, resN.val)
+                        end
+                    end
+                elseif kind == :S
+                    resS = parse_datum(String, chunk, pos, len, opts_sq, opts_dq)
+                    # @info "string" resS resS.val.pos resS.val.len Parsers.getstring(chunk, resS.val, 0x00)
+                    checkcode(String, resS.code, pos+offset, resS.tlen, i, ncols)
+                    pos += resS.tlen
+                    if missidx == 0
+                        iS += 1
+                        col = Scols[iS]
+                        if Parsers.sentinel(resS.code)
+                            error("Missing value in column $name")
+                        else
+                            push!(col, get_parsed_string(chunk, resS))
+                        end
+                    else
+                        iSX += 1
+                        col = SXcols[iSX]
+                        if Parsers.sentinel(resS.code)
+                            push!(col, missing)
+                        else
+                            push!(col, get_parsed_string(chunk, resS))
+                        end
+                    end
+                elseif kind == :D
+                    resD = parse_datum(DateTime, chunk, pos, len, date_opts_sq[iD+iDX+1], date_opts_dq[iD+iDX+1])
+                    # @info "date" resD
+                    checkcode(DateTime, resD.code, pos+offset, resD.tlen, i, ncols)
+                    pos += resD.tlen
+                    if missidx == 0
+                        iD += 1
+                        col = Dcols[iD]
+                        if Parsers.sentinel(resD.code)
+                            error("Missing value in column $name")
+                        else
+                            push!(col, resD.val)
+                        end
+                    else
+                        iDX += 1
+                        col = DXcols[iDX]
+                        if Parsers.sentinel(resD.code)
+                            push!(col, missing)
+                        else
+                            push!(col, resD.val)
+                        end
+                    end
+                elseif kind == :C
+                    resS = parse_datum(String, chunk, pos, len, opts_sq, opts_dq)
+                    # @info "categorical" resS
+                    checkcode(String, resS.code, pos+offset, resS.tlen, i, ncols)
+                    pos += resS.tlen
+                    if missidx == 0
+                        iC += 1
+                        col = Ccols[iC]
+                        if Parsers.sentinel(resS.code)
+                            error("Missing value in column $name")
+                        else
+                            pool = pools[iC+iCX]
+                            str = get_parsed_string(chunk, resS)
+                            if haskey(pool.invindex, str)
+                                push!(col, pool[get(pool, str)])
+                            else
+                                error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
+                            end
+                        end
+                    else
+                        iCX += 1
+                        col = CXcols[iCX]
+                        if Parsers.sentinel(resS.code)
+                            push!(col, missing)
+                        else
+                            pool = pools[iC+iCX]
+                            str = get_parsed_string(chunk, resS)
+                            if haskey(pool.invindex, str)
+                                push!(col, pool[get(pool, str)])
+                            else
+                                error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
+                            end
+                        end
+                    end
+                else
+                    error("Not implemented: kind=$kind")
+                end
+            end
+        end
+    end
+    # construct the output table
+    schema = Tables.Schema(r.colnames, r.coltypes)
+    dict = Dict(zip(colnames, cols))
+    return Tables.DictColumnTable(schema, dict)
 end
 
 ### SAVING
@@ -856,9 +991,11 @@ end
 
 ### TABLES.JL INTEGRATION
 
-Tables.istable(r::ARFFReader) = true
-Tables.rowaccess(r::ARFFReader) = true
+Tables.istable(::Type{<:ARFFReader}) = true
+Tables.rowaccess(::Type{<:ARFFReader}) = true
 Tables.rows(r::ARFFReader) = r
+Tables.columnaccess(::Type{<:ARFFReader}) = true
+Tables.columns(r::ARFFReader) = readcolumns(r)
 Tables.schema(r::ARFFReader) = Tables.Schema(r.colnames, r.coltypes)
 
 ### FILEIO INTEGRATION
