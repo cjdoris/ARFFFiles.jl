@@ -27,18 +27,17 @@ ARFFFiles.save("mytable.arff", df)
 
 ## Loading
 
-- `load(file)` loads the table in the given file as an `ARFFTable`.
-- `load(io, [own=false])` loads the table from the given IO stream.
-- `load(f, ...)` is equivalent to `f(loadstreaming(...))` but ensures the file is closed afterwards.
-- `loadstreaming(io, [own=false])` returns a `ARFFReader` object `r`:
-    - It satisfies the `Tables.jl` interface, so can be materialized as a table.
+- `load(file)` loads the table in the given file (filename or IO stream) as an `ARFFTable`.
+- `load(func, file)` is equivalent to `func(loadstreaming(file))` but ensures the file is closed afterwards.
+- `loadstreaming(file)` returns a `ARFFReader` object `r`:
+    - Satisfies the `Tables.jl` interface, so can be materialized as a table.
     - `r.header` contains the header parsed from `io`.
-    - Iteration yields rows of type `ARFFRow`.
-    - `read(r)` reads the whole table as a vector of rows.
-    - `read(r, n)` reads up to `n` rows.
-    - `read!(r, x)` reads into the pre-allocated vector `x` and returns the number of rows read.
+    - Iterates rows of type `ARFFRow`.
+    - `read(r)`, `read(r, n)` and `read!(r, x)` reads rows of the table.
     - `readcolumns(r, [maxbytes=nothing])` reads the whole table into a columnar format. Specify `maxbytes` to read a portion of the rows.
     - `close(r)` closes the underlying io stream, unless `own=false`.
+- `loadchunks(file)` returns an iterator of `ARFFTable`s for efficiently streaming very large tables. Equivalent to `Tables.partitions(loadstreaming(file))`.
+- `loadchunks(func, file)` is equivalent to `func(loadchunks(file))` but ensures the file is closed afterwards.
 
 **Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)).
 
@@ -46,6 +45,8 @@ ARFFFiles.save("mytable.arff", df)
 - `missingcols=true`: By default we assume all columns can contain missing data (`?`). This option controls this behaviour. It can be `true`, `false`, a vector or set of symbols, or a function taking a symbol and returning true if that column can contain missings.
 - `missingnan=false`: Convert missing values in numeric columns to NaN. This is equivalent to excluding these columns in `missingcols`.
 - `categorical=true`: When false, nominal columns are converted to `String` instead of `CategoricalValue{String}`.
+- `chunkbytes=2^26`: Read approximately this many bytes per chunk when iterating over chunks or rows.
+- `own=false`: Signals whether or not to close the underlying IO stream when `close(::ARFFReader)` is called.
 
 ## Saving
 

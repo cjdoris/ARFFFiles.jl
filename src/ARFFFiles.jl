@@ -448,7 +448,7 @@ Base.close(r::ARFFReader) = r.own_io ? close(r.io) : nothing
 Base.eof(r::ARFFReader) = eof(r.io)
 
 """
-    loadstreaming(io::IO, own=false; [missingcols=true], [missingnan=false], [categorical=true])
+    loadstreaming(io::IO, own=false; [missingcols=true], [missingnan=false], [categorical=true], [chunkbytes=2^26])
     loadstreaming(filename::AbstractString; ...)
 
 An [`ARFFReader`](@ref) object for reading the given ARFF file one record at a time.
@@ -462,6 +462,9 @@ Option `missingnan` specifies whether or not to convert missing values in numeri
 
 Option `categorical` specifies whether or not to convert nominal columns to `CategoricalValue`
 or `String`.
+
+Option `chunkbytes` specifies approximately how many bytes to read per chunk when iterating
+over chunks or rows.
 """
 function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
     missingcols =
