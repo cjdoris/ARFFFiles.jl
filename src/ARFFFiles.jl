@@ -894,10 +894,10 @@ function write_datum(io::IO, x::AbstractString)
     if eltype(x) != Char
         x = convert(String, x)
     end
-    write(io, '"')
+    write(io, ''')
     for c in x
         c == '\0' ? write(io, "\\0") :
-        c == '"'  ? write(io, "\\\"") :
+        c == '''  ? write(io, "\\'") :
         c == '\\' ? write(io, "\\\\") :
         c == '\a' ? write(io, "\\a") :
         c == '\b' ? write(io, "\\b") :
@@ -909,7 +909,7 @@ function write_datum(io::IO, x::AbstractString)
         c == '\v' ? write(io, "\\v") :
         write(io, c)
     end
-    write(io, '"')
+    write(io, ''')
 end
 write_datum(io::IO, x::Union{Int8,UInt8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128,BigInt,Float16,Float32,Float64,BigFloat}) = print(io, x)
 write_datum(io::IO, x::Bool) = print(io, x ? "1" : "0")
@@ -917,16 +917,8 @@ write_datum(io::IO, x::Integer) = write_datum(io, convert(BigInt, x))
 write_datum(io::IO, x::Real) = write_datum(io, convert(BigFloat, x))
 write_datum(io::IO, x::DateTime) = write_datum(io, Dates.format(x, dateformat"YYYY-mm-dd\THH:MM:SS.sss"))
 write_datum(io::IO, x::Date) = write_datum(io, DateTime(x))
-write_datum(io::IO, x::CategoricalValue{<:AbstractString}) = write_datum(io, x.pool.levels[x.level])
+write_datum(io::IO, x::CategoricalValue{<:AbstractString}) = write_datum(io, x.pool.levels[x.ref])
 write_datum(io::IO, ::Missing) = write(io, "?")
-
-function find_levels(rows, ::Val{name}) where {name}
-    for row in rows
-        x = Tables.getcolumn(row, name)
-        x === missing && continue
-        return x.pool.levels
-    end
-end
 
 @generated function write_data(io::IO, rows, ::Val{N}) where {N}
     exs = []
@@ -984,7 +976,13 @@ function save(io::IO, df;
             println(io, "DATE \"yyyy-MM-dd'T'HH:mm:ss.SSS\"")
         elseif type <: Union{<:CategoricalValue{<:AbstractString},Missing}
             # find the levels of the first non-missing entry
-            levels = find_levels(Tables.rows(df), Val(name))
+            levels = nothing
+            for x in Tables.getcolumn(Tables.columns(df), name)
+                if x !== missing
+                    levels = x.pool.levels
+                    break
+                end
+            end
             if levels === nothing || isempty(levels)
                 println(io, "{}")
             else
