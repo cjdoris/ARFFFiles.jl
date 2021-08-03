@@ -72,16 +72,13 @@ module Parsing
     end
 
     function State(io::IO)
-        s = State{typeof(io)}(io, false, '\0')
-        inc!(s)
-        return s
+        State{typeof(io)}(io, eof(io), eof(io) ? '\0' : peek(io, Char))
     end
 
     function inc!(s::State)
+        read(s.io, Char)
         s.eof = eof(s.io)
-        if !s.eof
-            s.char = read(s.io, Char)
-        end
+        s.char = s.eof ? '\0' : peek(s.io, Char)
         return
     end
 
@@ -128,7 +125,7 @@ module Parsing
         return
     end
 
-    error(s::State, msg...) = Base.error(sprint(print, "byte ", position(s.io), ": syntax error: ", msg...))
+    error(s::State, msg...) = Base.error(sprint(print, "byte ", position(s.io)+1, ": syntax error: ", msg...))
 
     errorexpecting(s::State, msg::AbstractString) = error(s, "expecting ", msg, ", got ", s.eof ? "end of file" : repr(s.char))
     errorexpecting(s::State, cs::Tuple{Vararg{Char}}) = error(s, join(map(repr, cs), ", ", " or "))
@@ -364,7 +361,9 @@ function parse_javadateformat(java::AbstractString)
     return DateFormat(String(take!(io)))
 end
 
-const CatType = CategoricalValue{String, UInt32}
+const CatVal = CategoricalValue{String, UInt32}
+const CatVec = CategoricalVector{String,UInt32,String,CatVal,Union{}}
+const CatMissVec = CategoricalVector{Union{String,Missing},UInt32,String,CatVal,Missing}
 
 """
     ARFFReader
@@ -457,7 +456,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         elseif a.type isa ARFFNominalType
             if categorical
                 k = :C
-                t = CatType
+                t = CatVal
                 i = (numcategorical += 1)
                 push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
             else
@@ -644,9 +643,10 @@ function readcolumns(
     SXcols = Vector{Union{Missing,String}}[]
     Dcols = Vector{DateTime}[]
     DXcols = Vector{Union{Missing,DateTime}}[]
-    Ccols = Vector{CatType}[]
-    CXcols = Vector{Union{Missing,CatType}}[]
-    cols = Vector[]
+    Ccols = CatVec[]
+    CXcols = CatMissVec[]
+    cols = AbstractVector[]
+    iC = 0
     for i in 1:ncols
         kind = colkinds[i]
         missidx = colmissidxs[i]
@@ -681,12 +681,13 @@ function readcolumns(
                 push!(cols, col)
             end
         elseif kind == :C
+            iC += 1
             if missidx == 0
-                col = CatType[]
+                col = CategoricalVector{String}(UInt32[], r.pools[iC])
                 push!(Ccols, col)
                 push!(cols, col)
             else
-                col = Union{Missing,CatType}[]
+                col = CategoricalVector{Union{String,Missing}}(UInt32[], r.pools[iC])
                 push!(CXcols, col)
                 push!(cols, col)
             end
@@ -819,7 +820,7 @@ function readcolumns(
                     end
                 elseif kind == :C
                     resS = parse_datum(String, chunk, pos, len, opts_sq, opts_dq)
-                    # @info "categorical" resS
+                    # @info "categorical" resS resS.val.pos resS.val.len Parsers.getstring(chunk, resS.val, 0x00)
                     checkcode(String, resS.code, pos+offset, resS.tlen, i, ncols)
                     pos += resS.tlen
                     if missidx == 0
@@ -831,7 +832,7 @@ function readcolumns(
                             pool = pools[iC+iCX]
                             str = get_parsed_string(chunk, resS)
                             if haskey(pool.invindex, str)
-                                push!(col, pool[get(pool, str)])
+                                push!(col.refs, get(pool, str))
                             else
                                 error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
                             end
@@ -845,7 +846,7 @@ function readcolumns(
                             pool = pools[iC+iCX]
                             str = get_parsed_string(chunk, resS)
                             if haskey(pool.invindex, str)
-                                push!(col, pool[get(pool, str)])
+                                push!(col.refs, get(pool, str))
                             else
                                 error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
                             end
