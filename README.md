@@ -2,7 +2,7 @@
 
 Load and save [ARFF (Attribute Relation File Format)](https://waikato.github.io/weka-wiki/formats_and_processing/arff/) files.
 
-Integrated into [`Tables.jl`](https://github.com/JuliaData/Tables.jl) (for easily converting to your favourite table type) and [`FileIO.jl`](https://github.com/JuliaIO/FileIO.jl) (for generic file loading).
+Integrated into [`Tables.jl`](https://github.com/JuliaData/Tables.jl) for easily converting to your favourite table types.
 
 ## Install
 

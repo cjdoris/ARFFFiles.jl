@@ -1,6 +1,6 @@
 module ARFFFiles
 
-using Dates, Tables, CategoricalArrays, FileIO, Parsers
+using Dates, Tables, CategoricalArrays, Parsers
 
 export ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader, ARFFReader, ARFFRow, ARFFChunks
 
@@ -1027,11 +1027,11 @@ Tables.partitions(r::ARFFReader) = ARFFChunks(r)
 
 ### FILEIO INTEGRATION
 
-load(f::File{format"ARFF"}; opts...) = load(open(f), true; opts...)
-load(s::Stream{format"ARFF"}; opts...) = load(s.io, false; opts...)
+# load(f::File{format"ARFF"}; opts...) = load(open(f), true; opts...)
+# load(s::Stream{format"ARFF"}; opts...) = load(s.io, false; opts...)
 
-loadstreaming(s::Stream{format"ARFF"}; opts...) = loadstreaming(s.io, false; opts...)
+# loadstreaming(s::Stream{format"ARFF"}; opts...) = loadstreaming(s.io, false; opts...)
 
-save(f::File{format"ARFF"}, df; opts...) = open(io->save(io, df; opts...), f, "w")
+# save(f::File{format"ARFF"}, df; opts...) = open(io->save(io, df; opts...), f, "w")
 
 end # module
