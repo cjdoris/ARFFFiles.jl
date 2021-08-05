@@ -283,6 +283,27 @@ module Parsing
         end
     end
 
+    function parse_index(data, pos, len, offset)
+        value = 0
+        count = 0
+        @inbounds while pos ≤ len
+            c = data[pos]
+            if 0x30 ≤ c ≤ 0x39
+                pos += 1
+                count += 1
+                digit = c - 0x30
+                value > fld(typemax(Int), 10) && error("column index too large at byte $(pos+offset)")
+                value *= 10
+                value > typemax(Int) - digit && error("column index too large at byte $(pos+offset)")
+                value += digit
+            else
+                break
+            end
+        end
+        count == 0 && error("expecting column index at byte $(pos+offset)")
+        return pos, value
+    end
+
     options(qc; df=nothing) = Parsers.Options(sentinel=["?"], openquotechar=qc, closequotechar=qc, escapechar='\\', delim=',', quoted=true, comment="%", ignoreemptylines=true, dateformat=df)
 
     function parse_datum(::Type{T}, data::AbstractVector{UInt8}, pos::Integer=1, len::Integer=length(data)-(pos-1), opts1=parse_opts('''), opts2=parse_opts('"')) where {T}
@@ -404,9 +425,10 @@ function parse_javadateformat(java::AbstractString)
     return DateFormat(String(take!(io)))
 end
 
-const CatVal = CategoricalValue{String, UInt32}
-const CatVec = CategoricalVector{String,UInt32,String,CatVal,Union{}}
-const CatMissVec = CategoricalVector{Union{String,Missing},UInt32,String,CatVal,Missing}
+const CatVal = eltype(CategoricalVector{String,UInt32}(undef, 0))
+const CatVec = typeof(CategoricalVector{String,UInt32}(undef, 0))
+const CatMissVec = typeof(CategoricalVector{Union{Missing,String},UInt32}(undef, 0))
+const CatPool = typeof(CategoricalVector{String,UInt32}(undef, 0).pool)
 
 """
     ARFFReader
@@ -434,7 +456,9 @@ mutable struct ARFFReader{IO}
     colkinds :: Vector{Symbol} # :N, :S, :D, :C (numeric, string, date, categorical)
     colmissings :: BitVector # true if the column can have missing elements
     coltypes :: Vector{Type} # combines kind and missing
-    pools :: Vector{CategoricalPool{String,UInt32}}
+    colkindidxs :: Vector{Int} # the ith column is the colkindidxs[i]th of its kind
+    coltypeidxs :: Vector{Int} # the ith column is the coltypeidxs[i]th of its type
+    pools :: Vector{CatPool}
     dateformats :: Vector{DateFormat}
     # row iteration
     chunk :: ARFFTable
@@ -478,44 +502,50 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
     colkinds = Symbol[]
     colmissings = BitVector()
     coltypes = Type[]
-    pools = CategoricalPool{String,UInt32}[]
+    coltypeidxs = Int[]
+    colkindidxs = Int[]
+    pools = CatPool[]
     dateformats = DateFormat[]
+    nN = nNX = nS = nSX = nC = nCX = nD = nDX = 0
     for a in header.attributes
         n = Symbol(a.name)
+        m = missingcols(n) && !(missingnan && a.type isa ARFFNumericType)
         if a.type isa ARFFNumericType
             k = :N
             t = Float64
-        elseif a.type isa ARFFStringType
+            jt = m ? (nNX += 1) : (nN += 1)
+            jk = nN + nNX
+        elseif categorical && a.type isa ARFFNominalType
+            k = :C
+            t = CatVal
+            jt = m ? (nCX += 1) : (nC += 1)
+            jk = nC + nCX
+            push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
+        elseif a.type isa ARFFStringType || a.type isa ARFFNominalType
             k = :S
             t = String
-        elseif a.type isa ARFFNominalType
-            if categorical
-                k = :C
-                t = CatVal
-                push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
-            else
-                k = :S
-                t = String
-            end
+            jt = m ? (nSX += 1) : (nS += 1)
+            jk = nS + nSX
         elseif a.type isa ARFFDateType
             k = :D
             t = DateTime
+            jt = m ? (nDX += 1) : (nD += 1)
+            jk = nD + nDX
             push!(dateformats, parse_javadateformat(a.type.format))
         else
             error("not implemented")
         end
-        if missingcols(n) && !(missingnan && a.type isa ARFFNumericType)
-            m = true
+        if m
             t = Union{t, Missing}
-        else
-            m = false
         end
         push!(colnames, n)
         push!(colkinds, k)
         push!(coltypes, t)
         push!(colmissings, m)
+        push!(coltypeidxs, jt)
+        push!(colkindidxs, jk)
     end
-    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, coltypes, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -633,12 +663,7 @@ function readcolumns(
     chunkbytes=1<<20,
 ) :: ARFFTable
     # initialize columns
-    colnames = r.colnames
-    coltypes = r.coltypes
-    colkinds = r.colkinds
-    colmissings = r.colmissings
-    pools = r.pools
-    ncols = length(colnames)
+    ncols = length(r.colnames)
     Ncols = Vector{Float64}[]
     NXcols = Vector{Union{Missing,Float64}}[]
     Scols = Vector{String}[]
@@ -649,9 +674,9 @@ function readcolumns(
     CXcols = CatMissVec[]
     cols = AbstractVector[]
     iC = 0
-    for i in 1:ncols
-        kind = colkinds[i]
-        missable = colmissings[i]
+    @inbounds for i in 1:ncols
+        kind = r.colkinds[i]
+        missable = r.colmissings[i]
         if kind == :N
             if !missable
                 col = Float64[]
@@ -701,14 +726,7 @@ function readcolumns(
     nrows = 0
     nbytes = 0
     io = r.io
-    function checkcode(T, code, pos, tlen, i, n)
-        if Parsers.invalid(code)
-            error("Could not parse $T at byte $pos")
-        elseif i < n ? !Parsers.delimited(code) : !(Parsers.newline(code) || Parsers.eof(code))
-            error("Expecting $(i<n ? "delimiter" : "new line") at byte $(pos+tlen)")
-        end
-    end
-    while !eof(io) && (maxbytes === nothing || nbytes < maxbytes)
+    @inbounds while !eof(io) && (maxbytes === nothing || nbytes < maxbytes)
         # remeber where we started
         offset = position(io)
         # read a chunk
@@ -723,8 +741,8 @@ function readcolumns(
         pos = 1
         len = length(chunk)
         nbytes += len
-        @inbounds while pos ≤ len
-            # skip any initial whitespace
+        while pos ≤ len
+            # skip any initial whitespace (including newlines)
             c = chunk[pos]
             if c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D
                 pos += 1
@@ -743,127 +761,203 @@ function readcolumns(
                 continue
             end
             nrows += 1
-            # sparse format
             if c == 0x7B
-                error("sparse ARFF format not supported at byte $(pos+offset)")
-                continue
-            end
-            # dense format
-            iN = iNX = iS = iSX = iD = iDX = iC = iCX = 0
-            for i in 1:ncols
-                name = colnames[i]
-                kind = colkinds[i]
-                missable = colmissings[i]
-                if kind == :N
-                    resN = Parsing.parse_datum(Float64, chunk, pos, len, opts_sq, opts_dq)
-                    # @info "number" resN
-                    checkcode(Float64, resN.code, pos+offset, resN.tlen, i, ncols)
-                    pos += resN.tlen
-                    if !missable
-                        iN += 1
-                        col = Ncols[iN]
-                        if Parsers.sentinel(resN.code)
-                            push!(col, NaN)
-                        else
-                            push!(col, resN.val)
-                        end
-                    else
-                        iNX += 1
-                        col = NXcols[iNX]
-                        if Parsers.sentinel(resN.code)
-                            push!(col, missing)
-                        else
-                            push!(col, resN.val)
-                        end
-                    end
-                elseif kind == :S
-                    resS = Parsing.parse_datum(String, chunk, pos, len, opts_sq, opts_dq)
-                    # @info "string" resS resS.val.pos resS.val.len Parsers.getstring(chunk, resS.val, 0x00)
-                    checkcode(String, resS.code, pos+offset, resS.tlen, i, ncols)
-                    pos += resS.tlen
-                    if !missable
-                        iS += 1
-                        col = Scols[iS]
-                        if Parsers.sentinel(resS.code)
-                            error("Missing value in column $name")
-                        else
-                            push!(col, Parsing.get_parsed_string(chunk, resS))
-                        end
-                    else
-                        iSX += 1
-                        col = SXcols[iSX]
-                        if Parsers.sentinel(resS.code)
-                            push!(col, missing)
-                        else
-                            push!(col, Parsing.get_parsed_string(chunk, resS))
-                        end
-                    end
-                elseif kind == :D
-                    resD = Parsing.parse_datum(DateTime, chunk, pos, len, date_opts_sq[iD+iDX+1], date_opts_dq[iD+iDX+1])
-                    # @info "date" resD
-                    checkcode(DateTime, resD.code, pos+offset, resD.tlen, i, ncols)
-                    pos += resD.tlen
-                    if !missable
-                        iD += 1
-                        col = Dcols[iD]
-                        if Parsers.sentinel(resD.code)
-                            error("Missing value in column $name")
-                        else
-                            push!(col, resD.val)
-                        end
-                    else
-                        iDX += 1
-                        col = DXcols[iDX]
-                        if Parsers.sentinel(resD.code)
-                            push!(col, missing)
-                        else
-                            push!(col, resD.val)
-                        end
-                    end
-                elseif kind == :C
-                    resS = Parsing.parse_datum(String, chunk, pos, len, opts_sq, opts_dq)
-                    # @info "categorical" resS resS.val.pos resS.val.len Parsers.getstring(chunk, resS.val, 0x00)
-                    checkcode(String, resS.code, pos+offset, resS.tlen, i, ncols)
-                    pos += resS.tlen
-                    if !missable
-                        iC += 1
-                        col = Ccols[iC]
-                        if Parsers.sentinel(resS.code)
-                            error("Missing value in column $name")
-                        else
-                            pool = pools[iC+iCX]
-                            str = Parsing.get_parsed_string(chunk, resS)
-                            if haskey(pool.invindex, str)
-                                push!(col.refs, get(pool, str))
-                            else
-                                error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
-                            end
-                        end
-                    else
-                        iCX += 1
-                        col = CXcols[iCX]
-                        if Parsers.sentinel(resS.code)
-                            push!(col, missing)
-                        else
-                            pool = pools[iC+iCX]
-                            str = Parsing.get_parsed_string(chunk, resS)
-                            if haskey(pool.invindex, str)
-                                push!(col.refs, get(pool, str))
-                            else
-                                error("invalid nominal $(repr(str)) in column $name, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
-                            end
-                        end
-                    end
+                # sparse format
+                pos += 1
+                pos = Parsing.skipspace(chunk, pos, len)
+                pos ≤ len || error("unexpected end of input at byte $(pos+offset)")
+                if chunk[pos] == 0x7D
+                    pos += 1
                 else
-                    error("Not implemented: kind=$kind")
+                    # HACK: replace the final } on the line with a newline so it's CSV-like
+                    bpos = 0
+                    for cpos in pos:len
+                        c = chunk[cpos]
+                        if c == 0x7D
+                            bpos = cpos
+                        elseif c == 0x0A || c == 0x0D
+                            break
+                        end
+                    end
+                    if bpos == 0
+                        error("no closing } in row $nrows")
+                    else
+                        chunk[bpos] = 0x0A
+                    end
+                    # read each item
+                    while true
+                        pos = Parsing.skipspace(chunk, pos, len)
+                        pos, i = Parsing.parse_index(chunk, pos, len, offset)
+                        i += 1
+                        1 ≤ i ≤ ncols || error("sparse column index out of range at byte $(pos+offset)")
+                        pos = Parsing.skipspace(chunk, pos, len)
+                        pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, true, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                        done && break
+                    end
+                end
+                # insert zeros
+                for i in 1:ncols
+                    kind = r.colkinds[i]
+                    missable = r.colmissings[i]
+                    idx = r.coltypeidxs[i]
+                    if kind == :N
+                        if missable
+                            _readcolumns_pushzero(r, i, NXcols[idx], nrows, true)
+                        else
+                            _readcolumns_pushzero(r, i, Ncols[idx], nrows, true)
+                        end
+                    elseif kind == :S
+                        if missable
+                            _readcolumns_pushzero(r, i, SXcols[idx], nrows, false)
+                        else
+                            _readcolumns_pushzero(r, i, Scols[idx], nrows, false)
+                        end
+                    elseif kind == :D
+                        if missable
+                            _readcolumns_pushzero(r, i, DXcols[idx], nrows, false)
+                        else
+                            _readcolumns_pushzero(r, i, Dcols[idx], nrows, false)
+                        end
+                    elseif kind == :C
+                        if missable
+                            _readcolumns_pushzero(r, i, CXcols[idx], nrows, false)
+                        else
+                            _readcolumns_pushzero(r, i, Ccols[idx], nrows, false)
+                        end
+                    else
+                        error()
+                    end
+                end
+            else
+                # dense format
+                for i in 1:ncols
+                    pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, false, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                    @assert done == (i == ncols)
                 end
             end
         end
     end
     # construct the output table
-    schema = Tables.Schema(colnames, coltypes)
-    dict = Dict(zip(colnames, cols))
+    schema = Tables.Schema(r.colnames, r.coltypes)
+    dict = Dict(zip(r.colnames, cols))
     return ARFFTable(schema, dict)
+end
+
+@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+    @inbounds begin
+        k = r.colkinds[i]
+        m = r.colmissings[i]
+        jt = r.coltypeidxs[i]
+        jk = r.colkindidxs[i]
+        if k == :N
+            if m
+                _readcolumns_readdatum(r, Val(:NX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, NXcols[jt], nothing)
+            else
+                _readcolumns_readdatum(r, Val(:N), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Ncols[jt], nothing)
+            end
+        elseif k == :S
+            if m
+                _readcolumns_readdatum(r, Val(:SX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, SXcols[jt], nothing)
+            else
+                _readcolumns_readdatum(r, Val(:S), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Scols[jt], nothing)
+            end
+        elseif k == :D
+            opts1 = date_opts_sq[jk]
+            opts2 = date_opts_dq[jk]
+            if m
+                _readcolumns_readdatum(r, Val(:DX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, DXcols[jt], nothing)
+            else
+                _readcolumns_readdatum(r, Val(:D), chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, Dcols[jt], nothing)
+            end
+        elseif k == :C
+            pool = r.pools[jk]
+            if m
+                _readcolumns_readdatum(r, Val(:CX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, CXcols[jt], pool)
+            else
+                _readcolumns_readdatum(r, Val(:C), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Ccols[jt], pool)
+            end
+        else
+            error()
+        end
+    end
+end
+
+@inline function _readcolumns_readdatum(r, ::Val{kind}, chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, col, info) where {kind}
+    # select the type to parse
+    if kind == :N || kind == :NX
+        T = Float64
+    elseif kind == :S || kind == :SX || kind == :C || kind == :CX
+        T = String
+    elseif kind == :D || kind == :DX
+        T = DateTime
+    else
+        error()
+    end
+    # parse a datum
+    res = Parsing.parse_datum(T, chunk, pos, len, opts1, opts2)
+    # check for errors
+    Parsers.invalid(res.code) && error("Could not parse $T at byte $(pos+offset)")
+    # increment
+    pos += res.tlen
+    # check delimiters
+    if sparse
+        done = Parsers.newline(res.code) || Parsers.eof(res.code)
+        done || Parsers.delimited(res.code) || error("Expecting delimiter or new line at byte $(pos+offset)")
+    elseif i < ncols
+        Parsers.delimited(res.code) || error("Expecting delimiter at byte $(pos+offset)")
+        done = false
+    else
+        Parsers.newline(res.code) || Parsers.eof(res.code) || error("Expecting new line at byte $(pos+offset)")
+        done = true
+    end
+    # ensure the column is the right size for the value
+    if sparse && length(col) == nrows
+        error("Column '$(r.colnames[i])' (index $(i-1)) seen twice in row $nrows")
+    end
+    @assert length(col) == nrows - 1
+    # push the value
+    if Parsers.sentinel(res.code)
+        if kind == :N
+            push!(col, NaN)
+        elseif kind == :NX || kind == :SX || kind == :DX || kind == :CX
+            push!(col, missing)
+        else
+            error("Got missing value in column '$(r.colnames[i])' of row $nrows")
+        end
+    else
+        if kind == :N || kind == :NX || kind == :D || kind == :DX
+            push!(col, res.val)
+        elseif kind == :S || kind == :SX
+            str = Parsing.get_parsed_string(chunk, res)
+            push!(col, str)
+        elseif kind == :C || kind == :CX
+            str = Parsing.get_parsed_string(chunk, res)
+            pool = info
+            if haskey(pool.invindex, str)
+                push!(col.refs, get(pool, str))
+            else
+                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
+            end
+        else
+            error()
+        end
+    end
+    # done
+    return (pos, done)
+end
+
+@inline function _readcolumns_pushzero(r, i, col, nrows, avail)
+    n = length(col)
+    if n == nrows - 1
+        if avail
+            push!(col, 0)
+        else
+            error("Value of non-numeric column '$(r.colnames[i])' (index $(i-1)) not specified in sparse row $nrows")
+        end
+    else
+        @assert n == nrows
+    end
+    return
 end
 
 ### PARTITIONS
