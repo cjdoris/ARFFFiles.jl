@@ -455,6 +455,7 @@ mutable struct ARFFReader{IO}
     colnames :: Vector{Symbol} # name
     colkinds :: Vector{Symbol} # :N, :S, :D, :C (numeric, string, date, categorical)
     colmissings :: BitVector # true if the column can have missing elements
+    colmissingsdetected :: BitVector # true if missing is detected in the column
     coltypes :: Vector{Type} # combines kind and missing
     colkindidxs :: Vector{Int} # the ith column is the colkindidxs[i]th of its kind
     coltypeidxs :: Vector{Int} # the ith column is the coltypeidxs[i]th of its type
@@ -545,7 +546,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         push!(coltypeidxs, jt)
         push!(colkindidxs, jk)
     end
-    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -837,6 +838,13 @@ function readcolumns(
             end
         end
     end
+    # strip unnecessary missings
+    for i in 1:length(cols)
+        if r.colmissings[i] === true && !r.colmissingsdetected[i]
+            r.coltypes[i] = Vector{nonmissingtype(eltype(cols[i]))}
+            cols[i] = convert(r.coltypes[i], cols[i])
+        end
+    end
     # construct the output table
     schema = Tables.Schema(r.colnames, r.coltypes)
     dict = Dict(zip(r.colnames, cols))
@@ -921,6 +929,7 @@ end
             push!(col, NaN)
         elseif kind == :NX || kind == :SX || kind == :DX || kind == :CX
             push!(col, missing)
+            r.colmissingsdetected[i] = true
         else
             error("Got missing value in column '$(r.colnames[i])' of row $nrows")
         end
