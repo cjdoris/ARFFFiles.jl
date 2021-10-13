@@ -455,6 +455,7 @@ mutable struct ARFFReader{IO}
     colnames :: Vector{Symbol} # name
     colkinds :: Vector{Symbol} # :N, :S, :D, :C (numeric, string, date, categorical)
     colmissings :: BitVector # true if the column can have missing elements
+    automissingcols :: Bool # true if missincols === :auto
     colmissingsdetected :: BitVector # true if missing is detected in the column
     coltypes :: Vector{Type} # combines kind and missing
     colkindidxs :: Vector{Int} # the ith column is the colkindidxs[i]th of its kind
@@ -478,8 +479,9 @@ Base.eof(r::ARFFReader) = eof(r.io)
 
 An [`ARFFReader`](@ref) object for reading the given ARFF file one record at a time.
 
-Option `missingcols` specifies which columns can contain missing data. It can be `true` (all
-columns, the default), `false` (no columns), a set/vector of column names, a single column
+Option `missingcols` specifies which columns can contain missing data. It can be `:auto`
+(columns with missing values are automatically detected, the default), `true` (all
+columns), `false` (no columns), a set/vector of column names, a single column
 name, or a function taking a column name and returning true or false.
 
 Option `missingnan` specifies whether or not to convert missing values in numeric columns to
@@ -491,9 +493,10 @@ or `String`.
 Option `chunkbytes` specifies approximately how many bytes to read per chunk when iterating
 over chunks or rows.
 """
-function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
+function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
+    automissingcols = missingcols === :auto
     missingcols =
-        missingcols === true ? c->true :
+        missingcols === true || missingcols === :auto ? c->true :
         missingcols === false ? c->false :
         missingcols isa Union{AbstractSet,AbstractVector} ? ∈(missingcols) :
         missingcols isa Symbol ? ==(missingcols) :
@@ -546,7 +549,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=true, missingnan::Bo
         push!(coltypeidxs, jt)
         push!(colkindidxs, jk)
     end
-    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, automissingcols, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -839,14 +842,19 @@ function readcolumns(
         end
     end
     # strip unnecessary missings
-    for i in 1:length(cols)
-        if r.colmissings[i] === true && !r.colmissingsdetected[i]
-            r.coltypes[i] = Vector{nonmissingtype(eltype(cols[i]))}
-            cols[i] = convert(r.coltypes[i], cols[i])
+    if maxbytes === nothing && r.automissingcols
+        coltypes = copy(r.coltypes) # don't overwrite r.coltypes
+        for i in 1:length(cols)
+            if r.colmissings[i] === true && !r.colmissingsdetected[i]
+                coltypes[i] = nonmissingtype(coltypes[i])
+                cols[i] = convert(AbstractVector{coltypes[i]}, cols[i])
+            end
         end
+    else
+        coltypes = r.coltypes
     end
     # construct the output table
-    schema = Tables.Schema(r.colnames, r.coltypes)
+    schema = Tables.Schema(r.colnames, coltypes)
     dict = Dict(zip(r.colnames, cols))
     return ARFFTable(schema, dict)
 end
