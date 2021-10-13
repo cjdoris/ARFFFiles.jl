@@ -42,7 +42,7 @@ ARFFFiles.save("mytable.arff", df)
 **Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)).
 
 **Keyword options.**
-- `missingcols=true`: By default we assume all columns can contain missing data (`?`). This option controls this behaviour. It can be `true`, `false`, a vector or set of symbols, or a function taking a symbol and returning true if that column can contain missings.
+- `missingcols=:auto`: Controls which columns may contain missing data (`?`). It can be `:auto`, `:all`, `:none`, a set or vector of column names (symbols), or a function taking a symbol and returning true if that column can contain missing. If the table is being read in a streaming fashion, then `:auto` behaves the same as `:all`.
 - `missingnan=false`: Convert missing values in numeric columns to NaN. This is equivalent to excluding these columns in `missingcols`.
 - `categorical=true`: When false, nominal columns are converted to `String` instead of `CategoricalValue{String}`.
 - `chunkbytes=2^26`: Read approximately this many bytes per chunk when iterating over chunks or rows.

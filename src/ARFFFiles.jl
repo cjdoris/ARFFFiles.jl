@@ -1,3 +1,8 @@
+"""
+Module for loading, and saving of ARFFFiles.
+
+See `ARFFFiles.load` and `ARFFFiles.save`.
+"""
 module ARFFFiles
 
 using Dates, Tables, CategoricalArrays, Parsers
@@ -480,9 +485,10 @@ Base.eof(r::ARFFReader) = eof(r.io)
 An [`ARFFReader`](@ref) object for reading the given ARFF file one record at a time.
 
 Option `missingcols` specifies which columns can contain missing data. It can be `:auto`
-(columns with missing values are automatically detected, the default), `true` (all
-columns), `false` (no columns), a set/vector of column names, a single column
-name, or a function taking a column name and returning true or false.
+(columns with missing values are automatically detected, the default), `:all` or `true` (all
+columns), `:none` or `false` (no columns), a set or vector of column names, or a function
+taking a column name and returning true or false. Note that `:auto` does not apply if the
+table is being read in a streaming fashion, in which case it behaves like `:all`.
 
 Option `missingnan` specifies whether or not to convert missing values in numeric columns to
 `NaN`. This is equivalent to excluding these columns in `missingcols`.
@@ -496,10 +502,9 @@ over chunks or rows.
 function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
     automissingcols = missingcols === :auto
     missingcols =
-        missingcols === true || missingcols === :auto ? c->true :
-        missingcols === false ? c->false :
+        missingcols === true || missingcols === :auto || missingcols === :all ? c->true :
+        missingcols === false || missingcols === :none ? c->false :
         missingcols isa Union{AbstractSet,AbstractVector} ? ∈(missingcols) :
-        missingcols isa Symbol ? ==(missingcols) :
         missingcols
     header = Parsing.parse_header(io)
     colnames = Symbol[]
@@ -513,7 +518,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::B
     nN = nNX = nS = nSX = nC = nCX = nD = nDX = 0
     for a in header.attributes
         n = Symbol(a.name)
-        m = missingcols(n) && !(missingnan && a.type isa ARFFNumericType)
+        m = missingcols(n)::Bool && !(missingnan && a.type isa ARFFNumericType)
         if a.type isa ARFFNumericType
             k = :N
             t = Float64
@@ -561,6 +566,10 @@ loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts.
 The first form loads the entire ARFF file as a table. It is equivalent to `load(readcolumns, file, ...)`
 
 The second form is equivalent to `f(loadstreaming(file, ...))` but ensures that the file is closed afterwards.
+
+See [`loadstreaming`](@ref) for the available keyword parameters.
+
+For example `load(DataFrame, file)` loads the file as a `DataFrame`. Replace `DataFrame` with your favourite table type.
 """
 function load(f, fn::Union{IO,AbstractString}, args...; opts...)
     r = loadstreaming(fn, args...; opts...)
@@ -845,7 +854,7 @@ function readcolumns(
     if maxbytes === nothing && r.automissingcols
         coltypes = copy(r.coltypes) # don't overwrite r.coltypes
         for i in 1:length(cols)
-            if r.colmissings[i] === true && !r.colmissingsdetected[i]
+            if r.colmissings[i] && !r.colmissingsdetected[i]
                 coltypes[i] = nonmissingtype(coltypes[i])
                 cols[i] = convert(AbstractVector{coltypes[i]}, cols[i])
             end
