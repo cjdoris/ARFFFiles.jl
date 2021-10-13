@@ -63,7 +63,7 @@ Sub-module handling low-level parsing of lines of ARFF files.
 """
 module Parsing
 
-    using Parsers
+    using Parsers, CategoricalArrays
     using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader
 
     function skipspace(data, pos, len)
@@ -306,7 +306,8 @@ module Parsing
 
     options(qc; df=nothing) = Parsers.Options(sentinel=["?"], openquotechar=qc, closequotechar=qc, escapechar='\\', delim=',', quoted=true, comment="%", ignoreemptylines=true, dateformat=df)
 
-    function parse_datum(::Type{T}, data::AbstractVector{UInt8}, pos::Integer=1, len::Integer=length(data)-(pos-1), opts1=parse_opts('''), opts2=parse_opts('"')) where {T}
+    parse_datum(::Type{CategoricalValue{T, UInt32}}, data::AbstractVector{UInt8}, pos::Integer, len::Integer, opts1, opts2) where T = parse_datum(T, data, pos, len, opts1, opts2)
+    function parse_datum(::Type{T}, data::AbstractVector{UInt8}, pos::Integer=1, len::Integer=length(data)-(pos-1), opts1=parse_opts('''), opts2=parse_opts('"')) where T
         # first try parsing single-quoted
         res1 = Parsers.xparse(T, data, pos, len, opts1)
         if Parsers.invalid(res1.code)
@@ -730,6 +731,7 @@ function readcolumns(
     nrows = 0
     nbytes = 0
     io = r.io
+    ntcols = (; Ncols, NXcols, Scols, SXcols, Ccols, CXcols, Dcols, DXcols)
     @inbounds while !eof(io) && (maxbytes === nothing || nbytes < maxbytes)
         # remeber where we started
         offset = position(io)
@@ -795,7 +797,7 @@ function readcolumns(
                         i += 1
                         1 ≤ i ≤ ncols || error("sparse column index out of range at byte $(pos+offset)")
                         pos = Parsing.skipspace(chunk, pos, len)
-                        pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, true, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                        pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, true, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, ntcols)
                         done && break
                     end
                 end
@@ -835,7 +837,7 @@ function readcolumns(
             else
                 # dense format
                 for i in 1:ncols
-                    pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, false, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                    pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, false, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, ntcols)
                     @assert done == (i == ncols)
                 end
             end
@@ -859,7 +861,7 @@ function readcolumns(
     return ARFFTable(schema, dict)
 end
 
-@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, cols)
     @inbounds begin
         k = r.colkinds[i]
         m = r.colmissings[i]
@@ -867,30 +869,29 @@ end
         jk = r.colkindidxs[i]
         if k == :N
             if m
-                _readcolumns_readdatum(r, Val(:NX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, NXcols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.NXcols[jt])
             else
-                _readcolumns_readdatum(r, Val(:N), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Ncols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.Ncols[jt])
             end
         elseif k == :S
             if m
-                _readcolumns_readdatum(r, Val(:SX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, SXcols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.SXcols[jt])
             else
-                _readcolumns_readdatum(r, Val(:S), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Scols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.Scols[jt])
             end
         elseif k == :D
             opts1 = date_opts_sq[jk]
             opts2 = date_opts_dq[jk]
             if m
-                _readcolumns_readdatum(r, Val(:DX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, DXcols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, cols.DXcols[jt])
             else
-                _readcolumns_readdatum(r, Val(:D), chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, Dcols[jt], nothing)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, cols.Dcols[jt])
             end
         elseif k == :C
-            pool = r.pools[jk]
             if m
-                _readcolumns_readdatum(r, Val(:CX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, CXcols[jt], pool)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.CXcols[jt])
             else
-                _readcolumns_readdatum(r, Val(:C), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Ccols[jt], pool)
+                _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, cols.Ccols[jt])
             end
         else
             error()
@@ -898,17 +899,28 @@ end
     end
 end
 
-@inline function _readcolumns_readdatum(r, ::Val{kind}, chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, col, info) where {kind}
-    # select the type to parse
-    if kind == :N || kind == :NX
-        T = Float64
-    elseif kind == :S || kind == :SX || kind == :C || kind == :CX
-        T = String
-    elseif kind == :D || kind == :DX
-        T = DateTime
+pushmissing!(r, i, col, nrows) = error("Got missing value in column '$(r.colnames[i])' of row $nrows")
+pushmissing!(r, ::Any, col::Vector{<:Number}, ::Any) = push!(col, NaN)
+function pushmissing!(r, i, col::AbstractVector{<:Union{Missing, T}}, ::Any) where T
+    push!(col, missing)
+    r.colmissingsdetected[i] = true
+end
+pushval!(::Any, ::Any, col, ::Any, res, ::Any) = push!(col, res.val)
+function pushval!(r, i, col::Vector{<:Union{Missing, String}}, chunk, res, ::Any)
+    str = Parsing.get_parsed_string(chunk, res)
+    push!(col, str)
+end
+function pushval!(r, i, col::CategoricalVector{<:Union{Missing, T}}, chunk, res, nrows) where T
+    str = Parsing.get_parsed_string(chunk, res)
+    pool = r.pools[r.colkindidxs[i]]
+    if haskey(pool.invindex, str)
+        push!(col.refs, get(pool, str))
     else
-        error()
+        error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
     end
+end
+@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts1, opts2, col::AbstractVector{<:Union{Missing, T}}) where T
+    # select the type to parse
     # parse a datum
     res = Parsing.parse_datum(T, chunk, pos, len, opts1, opts2)
     # check for errors
@@ -933,31 +945,9 @@ end
     @assert length(col) == nrows - 1
     # push the value
     if Parsers.sentinel(res.code)
-        if kind == :N
-            push!(col, NaN)
-        elseif kind == :NX || kind == :SX || kind == :DX || kind == :CX
-            push!(col, missing)
-            r.colmissingsdetected[i] = true
-        else
-            error("Got missing value in column '$(r.colnames[i])' of row $nrows")
-        end
+        pushmissing!(r, i, col, nrows)
     else
-        if kind == :N || kind == :NX || kind == :D || kind == :DX
-            push!(col, res.val)
-        elseif kind == :S || kind == :SX
-            str = Parsing.get_parsed_string(chunk, res)
-            push!(col, str)
-        elseif kind == :C || kind == :CX
-            str = Parsing.get_parsed_string(chunk, res)
-            pool = info
-            if haskey(pool.invindex, str)
-                push!(col.refs, get(pool, str))
-            else
-                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
-            end
-        else
-            error()
-        end
+        pushval!(r, i, col, chunk, res, nrows)
     end
     # done
     return (pos, done)
