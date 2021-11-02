@@ -821,9 +821,9 @@ function readcolumns(
                         end
                     elseif kind == :S
                         if missable
-                            _readcolumns_pushzero(r, i, SXcols[idx], nrows, false)
+                            _readcolumns_pushzero(r, i, SXcols[idx], nrows, true)
                         else
-                            _readcolumns_pushzero(r, i, Scols[idx], nrows, false)
+                            _readcolumns_pushzero(r, i, Scols[idx], nrows, true)
                         end
                     elseif kind == :D
                         if missable
@@ -833,9 +833,9 @@ function readcolumns(
                         end
                     elseif kind == :C
                         if missable
-                            _readcolumns_pushzero(r, i, CXcols[idx], nrows, false)
+                            _readcolumns_pushzero(r, i, CXcols[idx], nrows, true)
                         else
-                            _readcolumns_pushzero(r, i, Ccols[idx], nrows, false)
+                            _readcolumns_pushzero(r, i, Ccols[idx], nrows, true)
                         end
                     else
                         error()
@@ -972,11 +972,19 @@ end
     return (pos, done)
 end
 
+_zero(::Any, ::Any, ::Any, ::Any) = 0
+function _zero(::AbstractVector{<:Union{<:AbstractString, Missing}}, r, i, nrows)
+    @warn("Value of string column '$(r.colnames[i])' (index $(i-1)) is 0 in sparse row $nrows (see warning in section sparse ARFFF files https://waikato.github.io/weka-wiki/formats_and_processing/arff_developer/")
+    ""
+end
+function _zero(::CategoricalVector, r, i, nrows)
+    r.pools[r.coltypeidxs[i]][1]
+end
 @inline function _readcolumns_pushzero(r, i, col, nrows, avail)
     n = length(col)
     if n == nrows - 1
         if avail
-            push!(col, 0)
+            push!(col, _zero(col, r, i, nrows))
         else
             error("Value of non-numeric column '$(r.colnames[i])' (index $(i-1)) not specified in sparse row $nrows")
         end
