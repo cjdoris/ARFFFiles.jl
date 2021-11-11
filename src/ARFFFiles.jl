@@ -855,7 +855,7 @@ function readcolumns(
         coltypes = copy(r.coltypes) # don't overwrite r.coltypes
         for i in 1:length(cols)
             if r.colmissings[i] && !r.colmissingsdetected[i]
-                coltypes[i] = nonmissingtype(coltypes[i])
+                coltypes[i] = Base.nonmissingtype(coltypes[i])
                 cols[i] = convert(AbstractVector{coltypes[i]}, cols[i])
             end
         end
