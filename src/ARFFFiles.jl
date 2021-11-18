@@ -978,7 +978,7 @@ function _zero(::AbstractVector{<:Union{<:AbstractString, Missing}}, r, i, nrows
     ""
 end
 function _zero(::CategoricalVector, r, i, nrows)
-    r.pools[r.coltypeidxs[i]][1]
+    r.pools[r.colkindidxs[i]][1]
 end
 @inline function _readcolumns_pushzero(r, i, col, nrows, avail)
     n = length(col)
