@@ -974,7 +974,7 @@ end
 
 _zero(::Any, ::Any, ::Any, ::Any) = 0
 function _zero(::AbstractVector{<:Union{<:AbstractString, Missing}}, r, i, nrows)
-    @warn("Value of string column '$(r.colnames[i])' (index $(i-1)) is 0 in sparse row $nrows (see warning in section sparse ARFFF files https://waikato.github.io/weka-wiki/formats_and_processing/arff_developer/")
+    @warn "Value of string column '$(r.colnames[i])' (index $(i-1)) is not specified in sparse row $nrows, inserting empty string (see warning at https://waikato.github.io/weka-wiki/formats_and_processing/arff_stable/#sparse-arff-files)"
     ""
 end
 function _zero(::CategoricalVector, r, i, nrows)
