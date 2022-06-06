@@ -39,7 +39,7 @@ ARFFFiles.save("mytable.arff", df)
 - `loadchunks(file)` returns an iterator of `ARFFTable`s for efficiently streaming very large tables. Equivalent to `Tables.partitions(loadstreaming(file))`.
 - `loadchunks(func, file)` is equivalent to `func(loadchunks(file))` but ensures the file is closed afterwards.
 
-**Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime` and nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)).
+**Types.** Numbers load as `Float64`, strings as `String`, dates as `DateTime`, nominals as `CategoricalValue{String}` (from [`CategoricalArrays`](https://github.com/JuliaData/CategoricalArrays.jl)) and relationals as `ARFFTable`.
 
 **Keyword options.**
 - `missingcols=:auto`: Controls which columns may contain missing data (`?`). It can be `:auto`, `:all`, `:none`, a set or vector of column names (symbols), or a function taking a symbol and returning true if that column can contain missing. If the table is being read in a streaming fashion, then `:auto` behaves the same as `:all`.
