@@ -15,21 +15,8 @@ export ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType,
 Abstract type of ARFF types. Concrete subtypes are `ARFFNumericType`, `ARFFStringType`, `ARFFDateType` and `ARFFNominalType`.
 """
 abstract type ARFFType end
-struct ARFFNumericType <: ARFFType end
-struct ARFFStringType <:ARFFType end
-struct ARFFDateType <: ARFFType
-    format :: String
-end
-ARFFDateType() = ARFFDateType("yyyy-MM-dd'T'HH:mm:ss")
-struct ARFFNominalType <: ARFFType
-    classes :: Vector{String}
-end
 
 abstract type ARFFHeaderItem end
-
-struct ARFFRelation <: ARFFHeaderItem
-    name :: String
-end
 
 """
     ARFFAttribute
@@ -42,6 +29,29 @@ struct ARFFAttribute <: ARFFHeaderItem
     name :: String
     type :: ARFFType
 end
+
+struct ARFFNumericType <: ARFFType end
+
+struct ARFFStringType <:ARFFType end
+
+struct ARFFDateType <: ARFFType
+    format :: String
+end
+ARFFDateType() = ARFFDateType("yyyy-MM-dd'T'HH:mm:ss")
+
+struct ARFFNominalType <: ARFFType
+    classes :: Vector{String}
+end
+
+struct ARFFRelationalType <: ARFFType
+    attributes::Vector{ARFFAttribute}
+end
+ARFFRelationalType() = ARFFRelationalType(ARFFAttribute[])
+
+struct ARFFRelation <: ARFFHeaderItem
+    name :: String
+end
+
 struct ARFFDataStart <: ARFFHeaderItem end
 
 """
@@ -69,7 +79,7 @@ Sub-module handling low-level parsing of lines of ARFF files.
 module Parsing
 
     using Parsers
-    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader
+    using ..ARFFFiles: ARFFType, ARFFNumericType, ARFFStringType, ARFFDateType, ARFFNominalType, ARFFRelationalType, ARFFHeaderItem, ARFFRelation, ARFFAttribute, ARFFDataStart, ARFFHeader
 
     function skipspace(data, pos, len)
         @inbounds while pos ≤ len
@@ -99,6 +109,7 @@ module Parsing
     )
         relation = missing
         attributes = ARFFAttribute[]
+        depth = 0
         @inbounds while !eof(io)
             offset = position(io)
             data = codeunits(readline(io))
@@ -106,55 +117,51 @@ module Parsing
             pos = skipspace(data, 1, len)
             pos ≤ len || continue
             # there is something on this line, it better start with '@'
-            pos = expect(data, pos, len, offset, 0x40) # @
-            if pos ≤ len
-                c = data[pos]
-                # @RELATION
-                if c in (0x72, 0x52) # R
-                    pos += 1
-                    pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-                    pos = expect(data, pos, len, offset, (0x6C, 0x4C)) # L
-                    pos = expect(data, pos, len, offset, (0x61, 0x41)) # A
-                    pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-                    pos = expect(data, pos, len, offset, (0x69, 0x49)) # I
-                    pos = expect(data, pos, len, offset, (0x6F, 0x4F)) # O
-                    pos = expect(data, pos, len, offset, (0x6E, 0x4E)) # N
-                    pos = skipspace(data, pos, len)
-                    relation === missing || error("@relation seen twice")
-                    pos, relation = parse_string(data, pos, len, offset, opts_sq, opts_dq)
-                # @ATTRIBUTE
-                elseif c in (0x61, 0x41) # A
-                    pos += 1
-                    pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-                    pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-                    pos = expect(data, pos, len, offset, (0x72, 0x52)) # R
-                    pos = expect(data, pos, len, offset, (0x69, 0x49)) # I
-                    pos = expect(data, pos, len, offset, (0x62, 0x42)) # B
-                    pos = expect(data, pos, len, offset, (0x75, 0x55)) # U
-                    pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-                    pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-                    pos = skipspace(data, pos, len)
-                    relation === missing && error("@attribute specified before @relation")
-                    pos, attrname = parse_string(data, pos, len, offset, opts_sq, opts_dq)
-                    pos = skipspace(data, pos, len)
-                    pos, attrtype = parse_type(data, pos, len, offset, opts_sq, opts_dq)
-                    push!(attributes, ARFFAttribute(attrname, attrtype))
-                # @DATA
-                elseif c in (0x64, 0x44) # D
-                    pos += 1
-                    pos = expect(data, pos, len, offset, (0x61, 0x41)) # A
-                    pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-                    pos = expect(data, pos, len, offset, (0x61, 0x41)) # A
-                    relation === missing && error("@data specified before @relation")
-                    return ARFFHeader(relation, attributes)
-                else
-                    error("invalid header item at byte $(pos+offset)")
-                end
+            pos0 = expect(data, pos, len, offset, 0x40) # @
+            pos, str = parse_string(data, pos0, len, offset, opts_sq, opts_dq)
+            lstr = lowercase(str)
+            # @RELATION
+            if lstr == "relation"
+                depth == 0 || error("@relation specified inside relational attribute")
                 pos = skipspace(data, pos, len)
-                pos > len || error("expecting end of line at byte $(pos+offset)")
+                relation === missing || error("@relation seen twice")
+                pos, relation = parse_string(data, pos, len, offset, opts_sq, opts_dq)
+            # @ATTRIBUTE
+            elseif lstr == "attribute"
+                pos = skipspace(data, pos, len)
+                relation === missing && error("@attribute specified before @relation")
+                pos, attrname = parse_string(data, pos, len, offset, opts_sq, opts_dq)
+                pos = skipspace(data, pos, len)
+                pos, attrtype = parse_type(data, pos, len, offset, opts_sq, opts_dq)
+                attrs = attributes
+                for i in 1:depth
+                    attrs = (attrs[end].type::ARFFRelationalType).attributes
+                end
+                push!(attrs, ARFFAttribute(attrname, attrtype))
+                if attrtype isa ARFFRelationalType
+                    depth += 1
+                end
+            # @END
+            elseif lstr == "end"
+                depth > 0 || error("@end specified outside any relational attribute")
+                pos = skipspace(data, pos, len)
+                pos, attrname = parse_string(data, pos, len, offset, opts_sq, opts_dq)
+                attr = ARFFAttribute("", ARFFRelationalType(attributes))
+                for i in 1:depth
+                    attr = (attr.type::ARFFRelationalType).attributes[end]
+                end
+                attrname == attr.name || error("@end for $(repr(attrname)) but inside $(repr(attr.name))")
+                depth -= 1
+            # @DATA
+            elseif lstr == "data"
+                depth == 0 || error("@data specified inside relational attribute")
+                relation === missing && error("@data specified before @relation")
+                return ARFFHeader(relation, attributes)
             else
-                error("invalid header item at byte $(pos+offset)")
+                error("invalid header item $(repr(str)) at byte $(pos0+offset)")
             end
+            pos = skipspace(data, pos, len)
+            pos > len || error("expecting end of line at byte $(pos+offset)")
         end
     end
 
@@ -207,56 +214,8 @@ module Parsing
 
     function parse_type(data, pos, len, offset, opts1, opts2)
         pos ≤ len || error("expecting type at byte $(pos+offset)")
-        c = data[pos]
-        if c in (0x6E, 0x4E) # N
-            pos += 1
-            pos = expect(data, pos, len, offset, (0x75, 0x55)) # U
-            pos = expect(data, pos, len, offset, (0x6D, 0x4D)) # M
-            pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-            pos = expect(data, pos, len, offset, (0x72, 0x52)) # R
-            pos = expect(data, pos, len, offset, (0x69, 0x49)) # I
-            pos = expect(data, pos, len, offset, (0x63, 0x43)) # C
-            pos = skipspace(data, pos, len)
-            return pos, ARFFNumericType()
-        elseif c in (0x72, 0x52) # R
-            pos += 1
-            pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-            pos = expect(data, pos, len, offset, (0x61, 0x41)) # A
-            pos = expect(data, pos, len, offset, (0x6C, 0x4C)) # L
-            pos = skipspace(data, pos, len)
-            return pos, ARFFNumericType()
-        elseif c in (0x69, 0x49) # I
-            pos += 1
-            pos = expect(data, pos, len, offset, (0x6E, 0x4E)) # N
-            pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-            pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-            pos = expect(data, pos, len, offset, (0x67, 0x47)) # G
-            pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-            pos = expect(data, pos, len, offset, (0x72, 0x52)) # R
-            pos = skipspace(data, pos, len)
-            return pos, ARFFNumericType()
-        elseif c in (0x73, 0x53) # S
-            pos += 1
-            pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-            pos = expect(data, pos, len, offset, (0x72, 0x52)) # R
-            pos = expect(data, pos, len, offset, (0x69, 0x49)) # I
-            pos = expect(data, pos, len, offset, (0x6E, 0x4E)) # N
-            pos = expect(data, pos, len, offset, (0x67, 0x47)) # G
-            pos = skipspace(data, pos, len)
-            return pos, ARFFStringType()
-        elseif c in (0x64, 0x44) # D
-            pos += 1
-            pos = expect(data, pos, len, offset, (0x61, 0x41)) # A
-            pos = expect(data, pos, len, offset, (0x74, 0x54)) # T
-            pos = expect(data, pos, len, offset, (0x65, 0x45)) # E
-            pos = skipspace(data, pos, len)
-            if pos ≤ len
-                pos, fmt = parse_string(data, pos, len, offset, opts1, opts2)
-                return pos, ARFFDateType(fmt)
-            else
-                return pos, ARFFDateType(fmt)
-            end
-        elseif c == 0x7B # {
+        pos0 = pos
+        if data[pos] == 0x7B # {
             pos += 1
             items = String[]
             while true
@@ -284,7 +243,25 @@ module Parsing
             end
             return pos, ARFFNominalType(items)
         else
-            error("invalid type at byte $(pos+offset)")
+            pos, str = parse_string(data, pos, len, offset, opts1, opts2)
+            pos = skipspace(data, pos, len)
+            lstr = lowercase(str)
+            if lstr in ("numeric", "integer", "real")
+                return pos, ARFFNumericType()
+            elseif lstr == "string"
+                return pos, ARFFStringType()
+            elseif lstr == "date"
+                if pos ≤ len
+                    pos, fmt = parse_string(data, pos, len, offset, opts1, opts2)
+                    return pos, ARFFDateType(fmt)
+                else
+                    return pos, ARFFDateType(fmt)
+                end
+            elseif lstr == "relational"
+                return pos, ARFFRelationalType()
+            else
+                error("invalid type $(repr(str)) at byte $(pos0+offset)")
+            end
         end
     end
 
@@ -458,15 +435,16 @@ mutable struct ARFFReader{IO}
     header :: ARFFHeader
     # columns
     colnames :: Vector{Symbol} # name
-    colkinds :: Vector{Symbol} # :N, :S, :D, :C (numeric, string, date, categorical)
+    colkinds :: Vector{Symbol} # :N, :S, :D, :C, :R (numeric, string, date, categorical, relational)
     colmissings :: BitVector # true if the column can have missing elements
     automissingcols :: Bool # true if missincols === :auto
     colmissingsdetected :: BitVector # true if missing is detected in the column
     coltypes :: Vector{Type} # combines kind and missing
     colkindidxs :: Vector{Int} # the ith column is the colkindidxs[i]th of its kind
     coltypeidxs :: Vector{Int} # the ith column is the coltypeidxs[i]th of its type
-    pools :: Vector{CatPool}
-    dateformats :: Vector{DateFormat}
+    pools :: Vector{CatPool} # pools for categorical columns
+    dateformats :: Vector{DateFormat} # formats for date columns
+    readers :: Vector{ARFFReader{IOBuffer}} # readers for relational columns
     # row iteration
     chunk :: ARFFTable
     chunklen :: Int
@@ -499,14 +477,16 @@ or `String`.
 Option `chunkbytes` specifies approximately how many bytes to read per chunk when iterating
 over chunks or rows.
 """
-function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26)
+function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::Bool=false, categorical::Bool=true, chunkbytes::Integer=1<<26, header::Union{ARFFHeader,Nothing}=nothing)
     automissingcols = missingcols === :auto
     missingcols =
         missingcols === true || missingcols === :auto || missingcols === :all ? c->true :
         missingcols === false || missingcols === :none ? c->false :
         missingcols isa Union{AbstractSet,AbstractVector} ? ∈(missingcols) :
         missingcols
-    header = Parsing.parse_header(io)
+    if header === nothing
+        header = Parsing.parse_header(io)
+    end
     colnames = Symbol[]
     colkinds = Symbol[]
     colmissings = BitVector()
@@ -515,32 +495,42 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::B
     colkindidxs = Int[]
     pools = CatPool[]
     dateformats = DateFormat[]
-    nN = nNX = nS = nSX = nC = nCX = nD = nDX = 0
+    readers = ARFFReader{IOBuffer}[]
+    nN = nNX = nS = nSX = nC = nCX = nD = nDX = nR = nRX = 0
     for a in header.attributes
         n = Symbol(a.name)
         m = missingcols(n)::Bool && !(missingnan && a.type isa ARFFNumericType)
-        if a.type isa ARFFNumericType
+        at = a.type
+        if at isa ARFFNumericType
             k = :N
             t = Float64
             jt = m ? (nNX += 1) : (nN += 1)
             jk = nN + nNX
-        elseif categorical && a.type isa ARFFNominalType
+        elseif categorical && at isa ARFFNominalType
             k = :C
             t = CatVal
             jt = m ? (nCX += 1) : (nC += 1)
             jk = nC + nCX
             push!(pools, CategoricalPool{String,UInt32}(a.type.classes))
-        elseif a.type isa ARFFStringType || a.type isa ARFFNominalType
+        elseif at isa ARFFStringType || at isa ARFFNominalType
             k = :S
             t = String
             jt = m ? (nSX += 1) : (nS += 1)
             jk = nS + nSX
-        elseif a.type isa ARFFDateType
+        elseif at isa ARFFDateType
             k = :D
             t = DateTime
             jt = m ? (nDX += 1) : (nD += 1)
             jk = nD + nDX
-            push!(dateformats, parse_javadateformat(a.type.format))
+            push!(dateformats, parse_javadateformat(at.format))
+        elseif at isa ARFFRelationalType
+            k = :R
+            t = ARFFTable
+            jt = m ? (nRX += 1) : (nR += 1)
+            jk = nR + nRX
+            rdr = loadstreaming(IOBuffer(); missingcols, missingnan, categorical, chunkbytes, header=ARFFHeader("<nested>", at.attributes))
+            rdr.automissingcols = automissingcols
+            push!(readers, rdr)
         else
             error("not implemented")
         end
@@ -554,7 +544,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::B
         push!(coltypeidxs, jt)
         push!(colkindidxs, jk)
     end
-    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, automissingcols, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, automissingcols, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, readers, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -685,6 +675,8 @@ function readcolumns(
     DXcols = Vector{Union{Missing,DateTime}}[]
     Ccols = CatVec[]
     CXcols = CatMissVec[]
+    Rcols = Vector{ARFFTable}[]
+    RXcols = Vector{Union{Missing,ARFFTable}}[]
     cols = AbstractVector[]
     iC = 0
     @inbounds for i in 1:ncols
@@ -729,6 +721,16 @@ function readcolumns(
             else
                 col = CategoricalVector{Union{String,Missing}}(UInt32[], r.pools[iC])
                 push!(CXcols, col)
+                push!(cols, col)
+            end
+        elseif kind == :R
+            if !missable
+                col = ARFFTable[]
+                push!(Rcols, col)
+                push!(cols, col)
+            else
+                col = Union{Missing,ARFFTable}[]
+                push!(RXcols, col)
                 push!(cols, col)
             end
         else
@@ -804,7 +806,7 @@ function readcolumns(
                         i += 1
                         1 ≤ i ≤ ncols || error("sparse column index out of range at byte $(pos+offset)")
                         pos = Parsing.skipspace(chunk, pos, len)
-                        pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, true, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                        pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, true, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols, Rcols, RXcols)
                         done && break
                     end
                 end
@@ -844,7 +846,7 @@ function readcolumns(
             else
                 # dense format
                 for i in 1:ncols
-                    pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, false, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+                    pos, done = _readcolumns_readdatum(r, chunk, pos, len, offset, i, false, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols, Rcols, RXcols)
                     @assert done == (i == ncols)
                 end
             end
@@ -868,7 +870,7 @@ function readcolumns(
     return ARFFTable(schema, dict)
 end
 
-@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols)
+@inline function _readcolumns_readdatum(r, chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, date_opts_sq, date_opts_dq, Ncols, NXcols, Scols, SXcols, Dcols, DXcols, Ccols, CXcols, Rcols, RXcols)
     @inbounds begin
         k = r.colkinds[i]
         m = r.colmissings[i]
@@ -901,6 +903,13 @@ end
             else
                 _readcolumns_readdatum(r, Val(:C), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Ccols[jt], pool)
             end
+        elseif k == :R
+            r2 = r.readers[jk]
+            if m
+                _readcolumns_readdatum(r, Val(:RX), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, RXcols[jt], r2)
+            else
+                _readcolumns_readdatum(r, Val(:R), chunk, pos, len, offset, i, sparse, nrows, ncols, opts_sq, opts_dq, Rcols[jt], r2)
+            end
         else
             error()
         end
@@ -911,7 +920,7 @@ end
     # select the type to parse
     if kind == :N || kind == :NX
         T = Float64
-    elseif kind == :S || kind == :SX || kind == :C || kind == :CX
+    elseif kind == :S || kind == :SX || kind == :C || kind == :CX || kind == :R || kind == :RX
         T = String
     elseif kind == :D || kind == :DX
         T = DateTime
@@ -944,7 +953,7 @@ end
     if Parsers.sentinel(res.code)
         if kind == :N
             push!(col, NaN)
-        elseif kind == :NX || kind == :SX || kind == :DX || kind == :CX
+        elseif kind == :NX || kind == :SX || kind == :DX || kind == :CX || kind == :RX
             push!(col, missing)
             r.colmissingsdetected[i] = true
         else
@@ -964,6 +973,11 @@ end
             else
                 error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
             end
+        elseif kind == :R || kind == :RX
+            str = Parsing.get_parsed_string(chunk, res)
+            r2 = info
+            r2.io = IOBuffer(str)
+            push!(col, readcolumns(r2))
         else
             error()
         end
