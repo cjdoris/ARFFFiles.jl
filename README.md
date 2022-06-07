@@ -28,7 +28,7 @@ ARFFFiles.save("mytable.arff", df)
 ## Loading
 
 - `load(file)` loads the table in the given file (filename or IO stream) as an `ARFFTable`.
-- `load(func, file)` is equivalent to `func(loadstreaming(file))` but ensures the file is closed afterwards.
+- `load(func, file)` is equivalent to `func(load(file))` but operates recursively on any relational columns.
 - `loadstreaming(file)` returns a `ARFFReader` object `r`:
     - Satisfies the `Tables.jl` interface, so can be materialized as a table.
     - `r.header` contains the header parsed from `io`.
@@ -36,6 +36,7 @@ ARFFFiles.save("mytable.arff", df)
     - `read(r)`, `read(r, n)` and `read!(r, x)` reads rows of the table.
     - `readcolumns(r, [maxbytes=nothing])` reads the whole table into a columnar format. Specify `maxbytes` to read a portion of the rows.
     - `close(r)` closes the underlying io stream, unless `own=false`.
+- `loadstreaming(func, file)` is equivalent to `func(loadstreaming(file))` but ensures the file is closed afterwards.
 - `loadchunks(file)` returns an iterator of `ARFFTable`s for efficiently streaming very large tables. Equivalent to `Tables.partitions(loadstreaming(file))`.
 - `loadchunks(func, file)` is equivalent to `func(loadchunks(file))` but ensures the file is closed afterwards.
 

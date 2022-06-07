@@ -459,8 +459,12 @@ Base.eof(r::ARFFReader) = eof(r.io)
 """
     loadstreaming(io::IO, own=false; [missingcols=true], [missingnan=false], [categorical=true], [chunkbytes=2^26])
     loadstreaming(filename::AbstractString; ...)
+    loadstreaming(f, file, ...)
 
 An [`ARFFReader`](@ref) object for reading the given ARFF file one record at a time.
+
+If `f` is given, then this is like `f(loadstreaming(file, ...))` but ensures the reader is
+closed afterwards.
 
 Option `missingcols` specifies which columns can contain missing data. It can be `:auto`
 (columns with missing values are automatically detected, the default), `:all` or `true` (all
@@ -549,19 +553,7 @@ end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
 
-"""
-    load(file, ...)
-    load(f, file, ...)
-
-The first form loads the entire ARFF file as a table. It is equivalent to `load(readcolumns, file, ...)`
-
-The second form is equivalent to `f(loadstreaming(file, ...))` but ensures that the file is closed afterwards.
-
-See [`loadstreaming`](@ref) for the available keyword parameters.
-
-For example `load(DataFrame, file)` loads the file as a `DataFrame`. Replace `DataFrame` with your favourite table type.
-"""
-function load(f, fn::Union{IO,AbstractString}, args...; opts...)
+function loadstreaming(f, fn::Union{IO,AbstractString}, args...; opts...)
     r = loadstreaming(fn, args...; opts...)
     try
         return f(r)
@@ -569,14 +561,65 @@ function load(f, fn::Union{IO,AbstractString}, args...; opts...)
         close(r)
     end
 end
-load(fn::Union{IO,AbstractString}, args...; opts...) = load(readcolumns, fn, args...; opts...)
+
+"""
+    load([f], file, ...)
+
+Load the entire ARFF file (IO or filename) as a table.
+
+If `f` is given, then this function is like `f(load(file, ...))`, except that any
+relational columns (where each data point is itself a table) also have `f` applied.
+
+For example `load(DataFrame, file)` loads the file as a `DataFrame`. Replace `DataFrame`
+with your favourite table type.
+
+See [`loadstreaming`](@ref) for the keyword arguments.
+"""
+function load(fn::Union{IO,AbstractString}, args...; opts...)
+    r = loadstreaming(fn, args...; opts...)
+    try
+        return readcolumns(r)
+    finally
+        close(r)
+    end
+end
+function load(f, fn::Union{IO,AbstractString}, args...; opts...)
+    table = load(fn, args...; opts...)
+    return materialize_recursive(f, table)
+end
+
+function materialize_recursive(f, table::ARFFTable)
+    schema = Tables.schema(table)
+    if !any(ARFFTable <: T for T in schema.types)
+        return f(table)
+    end
+    colnames = Symbol[]
+    coltypes = Type[]
+    cols = Dict{Symbol,AbstractVector}()
+    for (colname, coltype) in zip(schema.names, schema.types)
+        col = Tables.getcolumn(table, colname)
+        if ARFFTable <: coltype
+            col = [x isa ARFFTable ? materialize_recursive(f, x) : x for x in col]
+            coltype = eltype(col)
+        end
+        push!(colnames, colname)
+        push!(coltypes, coltype)
+        cols[colname] = col
+    end
+    return f(ARFFTable(Tables.Schema(colnames, coltypes), cols))
+end
 
 """
     load_header(file, ...)
 
 Equivalent to `load(r->r.header, file, ...)`, which loads just the header from the given file as a `ARFFHeader`.
 """
-load_header(fn::Union{IO,AbstractString}, args...; opts...) = load(r->r.header, fn, args...; opts...)
+function load_header(fn::Union{IO,AbstractString}, args...; opts...)
+    r = loadstreaming(fn, args...; opts...)
+    h = r.header
+    close(r)
+    return h
+end
 
 """
     loadchunks(file, ...)
@@ -596,6 +639,7 @@ function loadchunks(f, fn::Union{IO,AbstractString}, args...; opts...)
         close(r)
     end
 end
+loadchunks(fn::Union{IO,AbstractString}, args...; opts...) = loadchunks(identity, fn, args...; opts...)
 
 """
     nextrow(r::ARFFReader{names, types}) :: Union{Nothing, NamedTuple{names, types}}
@@ -1166,14 +1210,5 @@ Tables.columnaccess(::Type{<:ARFFReader}) = true
 Tables.columns(r::ARFFReader) = readcolumns(r)
 Tables.schema(r::ARFFReader) = Tables.Schema(r.colnames, r.coltypes)
 Tables.partitions(r::ARFFReader) = ARFFChunks(r)
-
-### FILEIO INTEGRATION
-
-# load(f::File{format"ARFF"}; opts...) = load(open(f), true; opts...)
-# load(s::Stream{format"ARFF"}; opts...) = load(s.io, false; opts...)
-
-# loadstreaming(s::Stream{format"ARFF"}; opts...) = loadstreaming(s.io, false; opts...)
-
-# save(f::File{format"ARFF"}, df; opts...) = open(io->save(io, df; opts...), f, "w")
 
 end # module
