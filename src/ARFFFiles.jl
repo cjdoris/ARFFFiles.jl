@@ -456,6 +456,8 @@ Base.close(r::ARFFReader) = r.own_io ? close(r.io) : nothing
 
 Base.eof(r::ARFFReader) = eof(r.io)
 
+_schema(names, types) = Tables.Schema(names, types, stored=true)
+
 """
     loadstreaming(io::IO, own=false; [missingcols=true], [missingnan=false], [categorical=true], [chunkbytes=2^26])
     loadstreaming(filename::AbstractString; ...)
@@ -548,7 +550,7 @@ function loadstreaming(io::IO, own::Bool=false; missingcols=:auto, missingnan::B
         push!(coltypeidxs, jt)
         push!(colkindidxs, jk)
     end
-    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, automissingcols, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, readers, ARFFTable(Tables.Schema([], []), Dict()), 0, 0, chunkbytes)
+    ARFFReader{typeof(io)}(io, own, header, colnames, colkinds, colmissings, automissingcols, falses(length(colmissings)), coltypes, colkindidxs, coltypeidxs, pools, dateformats, readers, ARFFTable(_schema([], []), Dict()), 0, 0, chunkbytes)
 end
 
 loadstreaming(fn::AbstractString; opts...) = loadstreaming(open(fn), true; opts...)
@@ -606,7 +608,7 @@ function materialize_recursive(f, table::ARFFTable)
         push!(coltypes, coltype)
         cols[colname] = col
     end
-    return f(ARFFTable(Tables.Schema(colnames, coltypes), cols))
+    return f(ARFFTable(_schema(colnames, coltypes), cols))
 end
 
 """
@@ -909,7 +911,7 @@ function readcolumns(
         coltypes = r.coltypes
     end
     # construct the output table
-    schema = Tables.Schema(r.colnames, coltypes)
+    schema = _schema(r.colnames, coltypes)
     dict = Dict(zip(r.colnames, cols))
     return ARFFTable(schema, dict)
 end
@@ -1208,7 +1210,7 @@ Tables.rowaccess(::Type{<:ARFFReader}) = true
 Tables.rows(r::ARFFReader) = r
 Tables.columnaccess(::Type{<:ARFFReader}) = true
 Tables.columns(r::ARFFReader) = readcolumns(r)
-Tables.schema(r::ARFFReader) = Tables.Schema(r.colnames, r.coltypes)
+Tables.schema(r::ARFFReader) = _schema(r.colnames, r.coltypes)
 Tables.partitions(r::ARFFReader) = ARFFChunks(r)
 
 end # module
