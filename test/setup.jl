@@ -1,4 +1,4 @@
-testdir = joinpath(dirname(dirname(pathof(ARFFFiles))), "test")
+testdir = @__DIR__
 datadir = joinpath(testdir, "data")
 @assert isdir(testdir)
 @assert isdir(datadir)
