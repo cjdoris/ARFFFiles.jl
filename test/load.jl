@@ -1,4 +1,5 @@
 @testitem "load_header" begin
+    include("setup.jl")
     cases = [(
         filename = "openml_32_sample.arff",
         header = ARFFHeader(
@@ -10,7 +11,7 @@
         ),
     )]
     @testset "$(case.filename)" for case in cases
-        header = ARFFFiles.load_header(joinpath(@__DIR__, "data", case.filename))
+        header = ARFFFiles.load_header(joinpath(datadir, case.filename))
         @test header isa ARFFHeader
         # we don't have == defined yet for ARFFHeader etc so just use string equality
         @test string(header) == string(case.header)
@@ -20,6 +21,7 @@ end
 @testitem "load" begin
     using CategoricalArrays
     using Tables
+    include("setup.jl")
     cases = [(
         filename = "openml_32_sample.arff",
         df = (
@@ -43,7 +45,7 @@ end
         ),
     )]
     @testset "$(case.filename)" for case in cases
-        df = ARFFFiles.load(NamedTuple, joinpath(@__DIR__, "data", case.filename))
+        df = ARFFFiles.load(NamedTuple, joinpath(datadir, case.filename))
         @test Tables.schema(df) == Tables.schema(case.df)
         @testset "column $k" for k in propertynames(df)
             @test typeof(df[k]) == typeof(case.df[k])
