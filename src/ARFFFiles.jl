@@ -588,7 +588,7 @@ function load(fn::Union{IO,AbstractString}, args...; opts...)
         close(r)
     end
 end
-function load(f, fn::Union{IO,AbstractString}, args...; opts...)
+function load(f::Base.Callable, fn::Union{IO,AbstractString}, args...; opts...)
     table = load(fn, args...; opts...)
     return materialize_recursive(f, table)
 end
@@ -636,7 +636,7 @@ It is equivalent to `Tables.partitions(loadstreaming(file, ...))`.
 The second form is equivalent to `f(loadchunks(file, ...))` but ensures that the file is
 closed afterwards.
 """
-function loadchunks(f, fn::Union{IO,AbstractString}, args...; opts...)
+function loadchunks(f::Base.Callable, fn::Union{IO,AbstractString}, args...; opts...)
     r = loadstreaming(fn, args...; opts...)
     try
         return f(Tables.partitions(r))
