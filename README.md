@@ -1,5 +1,9 @@
 # ARFFFiles.jl
 
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+[![Test Status](https://github.com/cjdoris/ARFFFiles.jl/actions/workflows/tests.yml/badge.svg)](https://github.com/cjdoris/ARFFFiles.jl/actions/workflows/tests.yml)
+[![Codecov](https://codecov.io/gh/cjdoris/ARFFFiles.jl/branch/main/graph/badge.svg?token=1flP5128hZ)](https://codecov.io/gh/cjdoris/ARFFFiles.jl)
+
 Load and save [ARFF (Attribute Relation File Format)](https://waikato.github.io/weka-wiki/formats_and_processing/arff/) files.
 
 Integrated into [`Tables.jl`](https://github.com/JuliaData/Tables.jl) for easily converting to your favourite table types.

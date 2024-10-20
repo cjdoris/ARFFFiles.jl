@@ -1,0 +1,29 @@
+% A few rows from OpenML/32
+% https://openml.org/search?type=data&id=32
+
+@relation pendigits
+
+@attribute 'input1'  numeric
+@attribute 'input2'  numeric
+@attribute 'input3'  numeric
+@attribute 'input4'  numeric
+@attribute 'input5'  numeric
+@attribute 'input6'  numeric
+@attribute 'input7'  numeric
+@attribute 'input8'  numeric
+@attribute 'input9'  numeric
+@attribute 'input10' numeric
+@attribute 'input11' numeric
+@attribute 'input12' numeric
+@attribute 'input13' numeric
+@attribute 'input14' numeric
+@attribute 'input15' numeric
+@attribute 'input16' numeric
+@attribute 'class' {0,1,2,3,4,5,6,7,8,9}
+
+@data
+ 47,100, 27, 81, 57, 37, 26,  0,  0, 23, 56, 53,100, 90, 40, 98, 8
+  0, 89, 27,100, 42, 75, 29, 45, 15, 15, 37,  0, 69,  2,100,  6, 2
+% ... many rows skipped ...
+ 19,100,  0, 61,  3, 23, 48,  0, 97, 27,100, 66, 62, 97, 10, 81, 0
+ 38,100, 37, 81, 12, 55,  0, 28, 52, 27,100, 42, 86, 26, 65,  0, 4
