@@ -4,7 +4,7 @@
         header = ARFFHeader(
             "pendigits",
             [
-                [ARFFAttribute("input$i", ARFFNumericType) for i = 1:16]...,
+                [ARFFAttribute("input$i", ARFFNumericType()) for i = 1:16]...,
                 ARFFAttribute("class", ARFFNominalType(map(string, 0:9))),
             ],
         ),
