@@ -293,14 +293,14 @@ module Parsing
         res1 = Parsers.xparse(T, data, pos, len, opts1)
         if Parsers.invalid(res1.code)
             # invalid: try again
-        elseif T == String && !Parsers.quoted(res1.code) && res1.val.len > 0 && @inbounds data[res1.val.pos] == opts2.oq
+        elseif T == String && !Parsers.quoted(res1.code) && res1.val.len > 0 && @inbounds data[skipspace(data, res1.val.pos, len)] == opts2.oq
             # double quoted: try again
         else
             return res1
         end
         # now try double-quoted
         res2 = Parsers.xparse(T, data, pos, len, opts2)
-        if T == String && !Parsers.invalid(res2.code) && !Parsers.quoted(res2.code) && res2.val.len > 0 && @inbounds data[res2.val.pos] == opts1.oq
+        if T == String && !Parsers.invalid(res2.code) && !Parsers.quoted(res2.code) && res2.val.len > 0 && @inbounds data[skipspace(data, res2.val.pos, len)] == opts1.oq
             # single-quoted (can't also be double-quoted)
             @assert Parsers.invalid(res1.code)
             return res1
@@ -329,7 +329,10 @@ module Parsing
     end
 
     function get_parsed_string(data, res)
-        str = Parsers.getstring(data, Parsers.PosLen(res.val.pos, res.val.len), 0x00)
+        str::SubString{String} = Parsers.getstring(data, Parsers.PosLen(res.val.pos, res.val.len), 0x00)
+        if !Parsers.quoted(res.code)
+            str = strip(str)
+        end
         if Parsers.escapedstring(res.code)
             str = replace(str, r"\\.?" => parse_escape)
         end
