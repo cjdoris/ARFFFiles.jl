@@ -1102,7 +1102,7 @@ function write_datum(io::IO, x::AbstractString)
     end
     write(io, ''')
 end
-write_datum(io::IO, x::Union{Int8,UInt8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128,BigInt,Float16,Float32,Float64,BigFloat}) = print(io, x)
+write_datum(io::IO, x::Union{Int8,UInt8,Int16,UInt16,Int32,UInt32,Int64,UInt64,Int128,UInt128,BigInt,Float16,Float32,Float64,BigFloat}) = isnan(x) ? write(io, "?") : print(io, x)
 write_datum(io::IO, x::Bool) = print(io, x ? "1" : "0")
 write_datum(io::IO, x::Integer) = write_datum(io, convert(BigInt, x))
 write_datum(io::IO, x::Real) = write_datum(io, convert(BigFloat, x))
