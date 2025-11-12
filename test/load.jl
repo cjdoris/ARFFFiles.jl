@@ -300,6 +300,37 @@ end
     @test occursin("Value of non-numeric column 'when'", message)
 end
 
+@testitem "sparse strict defaults" begin
+    using CategoricalArrays
+    using Tables
+
+    arff = """
+    @RELATION strict-defaults
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE str STRING
+    @ATTRIBUTE cat {foo,bar}
+    @DATA
+    {}
+    {0 1.5}
+    {1 'hi'}
+    {2 bar}
+    {0 2.0,1 'bye',2 foo}
+    """
+
+    logbuf = IOBuffer()
+    logger = Base.CoreLogging.SimpleLogger(logbuf, Base.CoreLogging.Warn)
+    table = Base.CoreLogging.with_logger(logger) do
+        ARFFFiles.load(NamedTuple, IOBuffer(arff); missingcols=false)
+    end
+    @test occursin("Value of string column 'str' (index 1) is not specified", String(take!(logbuf)))
+
+    @test Tables.schema(table).names == (:num, :str, :cat)
+    @test table.num == [0.0, 1.5, 0.0, 0.0, 2.0]
+    @test table.str == ["", "", "hi", "", "bye"]
+    expected_cats = CategoricalArray(["foo", "foo", "foo", "bar", "foo"], levels = ["foo", "bar"])
+    @test table.cat == expected_cats
+end
+
 @testitem "readcolumns guard rails" begin
     using ARFFFiles
     using Dates
