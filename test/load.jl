@@ -300,6 +300,37 @@ end
     @test occursin("Value of non-numeric column 'when'", message)
 end
 
+@testitem "sparse strict defaults" begin
+    using CategoricalArrays
+    using Tables
+
+    arff = """
+    @RELATION strict-defaults
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE str STRING
+    @ATTRIBUTE cat {foo,bar}
+    @DATA
+    {}
+    {0 1.5}
+    {1 'hi'}
+    {2 bar}
+    {0 2.0,1 'bye',2 foo}
+    """
+
+    logbuf = IOBuffer()
+    logger = Base.CoreLogging.SimpleLogger(logbuf, Base.CoreLogging.Warn)
+    table = Base.CoreLogging.with_logger(logger) do
+        ARFFFiles.load(NamedTuple, IOBuffer(arff); missingcols=false)
+    end
+    @test occursin("Value of string column 'str' (index 1) is not specified", String(take!(logbuf)))
+
+    @test Tables.schema(table).names == (:num, :str, :cat)
+    @test table.num == [0.0, 1.5, 0.0, 0.0, 2.0]
+    @test table.str == ["", "", "hi", "", "bye"]
+    expected_cats = CategoricalArray(["foo", "foo", "foo", "bar", "foo"], levels = ["foo", "bar"])
+    @test table.cat == expected_cats
+end
+
 @testitem "readcolumns guard rails" begin
     using ARFFFiles
     using Dates
@@ -338,4 +369,125 @@ end
         Float64[],
         nothing,
     )
+end
+
+@testitem "reader iteration and Tables integration" begin
+    using ARFFFiles
+    using CategoricalArrays
+    using Tables
+
+    arff = """
+    @RELATION interface
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE label {yes,no}
+    @DATA
+    1,yes
+    2,no
+    3,yes
+    """
+
+    mkreader(; kwargs...) = ARFFFiles.loadstreaming(IOBuffer(arff); kwargs...)
+
+    @testset "Base.read variants" begin
+        reader = mkreader(chunkbytes=16)
+        try
+            buf = Vector{Any}(undef, 2)
+            @test !eof(reader)
+            @test read!(reader, buf) == 2
+            @test all(row -> row isa ARFFFiles.ARFFRow, buf)
+            @test buf[1].num == 1.0
+            @test buf[2][:label] == "no"
+            remaining = read(reader)
+            @test length(remaining) == 1
+            @test remaining[1].num == 3.0
+            @test eof(reader)
+        finally
+            close(reader)
+        end
+
+        reader = mkreader(chunkbytes=16)
+        try
+            bigbuf = Vector{Any}(undef, 5)
+            @test read!(reader, bigbuf) == 3
+            @test bigbuf[1].num == 1.0
+            @test bigbuf[3][:label] == "yes"
+            @test !isassigned(bigbuf, 4)
+            @test eof(reader)
+        finally
+            close(reader)
+        end
+
+        reader = mkreader(chunkbytes=16)
+        try
+            rows = read(reader, 2)
+            @test length(rows) == 2
+            @test rows[1][:label] == "yes"
+        finally
+            close(reader)
+        end
+    end
+
+    @testset "iteration" begin
+        reader = mkreader(chunkbytes=16)
+        try
+            rows = collect(reader)
+            @test length(rows) == 3
+            @test rows[3].num == 3.0
+        finally
+            close(reader)
+        end
+    end
+
+    @testset "Tables traits" begin
+        reader = mkreader(chunkbytes=16)
+        try
+            @test Base.IteratorSize(typeof(reader)) === Base.SizeUnknown()
+            @test Base.eltype(typeof(reader)) === ARFFFiles.ARFFRow
+            @test Tables.istable(typeof(reader))
+            @test Tables.rowaccess(typeof(reader))
+            @test Tables.columnaccess(typeof(reader))
+            @test Base.invokelatest(Tables.istable, typeof(reader))
+            @test Base.invokelatest(Tables.rowaccess, typeof(reader))
+            @test Base.invokelatest(Tables.columnaccess, typeof(reader))
+            @test Tables.rows(reader) === reader
+            schema = Tables.schema(reader)
+            @test Tuple(schema.names) == (:num, :label)
+        finally
+            close(reader)
+        end
+
+        reader = mkreader(chunkbytes=16)
+        try
+            columns = Tables.columns(reader)
+            @test Tables.getcolumn(columns, :num) == [1.0, 2.0, 3.0]
+            labels = Tables.getcolumn(columns, :label)
+            @test labels == CategoricalArray(["yes", "no", "yes"], levels = ["yes", "no"])
+        finally
+            close(reader)
+        end
+
+        reader = mkreader(chunkbytes=16)
+        chunks = Tables.partitions(reader)
+        @test chunks isa ARFFFiles.ARFFChunks
+        @test Base.IteratorSize(typeof(chunks)) === Base.SizeUnknown()
+        @test Base.eltype(typeof(chunks)) === ARFFFiles.ARFFTable
+        @test !Base.eof(chunks)
+        pieces = collect(chunks)
+        @test length(pieces) == 1
+        @test Tables.getcolumn(pieces[1], :label) == CategoricalArray(["yes", "no", "yes"], levels = ["yes", "no"])
+        @test Base.eof(chunks)
+        Base.close(chunks)
+    end
+
+    @testset "loadchunks" begin
+        collected = ARFFFiles.loadchunks(IOBuffer(arff); chunkbytes=16) do parts
+            collect(parts)
+        end
+        @test length(collected) == 1
+        @test Tables.getcolumn(collected[1], :num) == [1.0, 2.0, 3.0]
+
+        chunks = ARFFFiles.loadchunks(IOBuffer(arff); chunkbytes=16)
+        @test chunks isa ARFFFiles.ARFFChunks
+        Base.close(chunks)
+    end
 end
