@@ -142,3 +142,200 @@ end
         ),
     )
 end
+
+@testitem "load missingcols strict" begin
+    using CategoricalArrays
+    using Tables
+    arff = """
+    @RELATION strict
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE str STRING
+    @DATA
+    % keep this line to cover comment skipping
+    1,"alpha"
+    ?,"beta"
+    """
+    table = ARFFFiles.load(NamedTuple, IOBuffer(arff); missingcols=false)
+    @test table.num[1] == 1.0
+    @test isnan(table.num[2])
+    @test table.str == ["alpha", "beta"]
+
+    reader = ARFFFiles.loadstreaming(IOBuffer(arff); missingcols=false)
+    chunk = ARFFFiles.readcolumns(reader; chunkbytes=nothing, maxbytes=nothing)
+    @test Tuple(Tables.schema(chunk).names) == (:num, :str)
+    nums = Tables.getcolumn(chunk, :num)
+    @test nums[1] == 1.0
+    @test isnan(nums[2])
+    close(reader)
+
+    arff_rel = """
+    @RELATION combos
+    @ATTRIBUTE cat {yes,no}
+    @ATTRIBUTE nested RELATIONAL
+        @ATTRIBUTE score NUMERIC
+    @END nested
+    @DATA
+    'yes','1.0'
+    'no','2.5'
+    """
+    reader = ARFFFiles.loadstreaming(IOBuffer(arff_rel); missingcols=false)
+    relchunk = ARFFFiles.readcolumns(reader)
+    cats = Tables.getcolumn(relchunk, :cat)
+    expected_cats = CategoricalArrays.CategoricalArray(["yes", "no"], levels = ["yes", "no"])
+    @test cats == expected_cats
+    nested = Tables.getcolumn(relchunk, :nested)
+    @test length(nested) == 2
+    @test all(x -> Tables.getcolumn(x, :score)[1] > 0, nested)
+    close(reader)
+end
+
+@testitem "load invalid data" begin
+    # strict missing string column should error
+    strict_missing = """
+    @RELATION strict-missing
+    @ATTRIBUTE str STRING
+    @DATA
+    ?
+    """
+    @test_throws ErrorException ARFFFiles.load(NamedTuple, IOBuffer(strict_missing); missingcols=false)
+
+    # invalid nominal choice
+    invalid_nominal = """
+    @RELATION cls
+    @ATTRIBUTE cls {yes,no}
+    @DATA
+    yes
+    maybe
+    """
+    err = try
+        ARFFFiles.load(NamedTuple, IOBuffer(invalid_nominal))
+        nothing
+    catch ex
+        ex
+    end
+    @test err !== nothing
+    @test occursin("Invalid nominal", sprint(showerror, err))
+
+    # sparse row with duplicate column index
+    dup_sparse = """
+    @RELATION dup
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE str STRING
+    @DATA
+    {0 1,0 2}
+    """
+    @test_throws ErrorException ARFFFiles.load(NamedTuple, IOBuffer(dup_sparse))
+
+    # sparse row omitting a required string column
+    strict_sparse = """
+    @RELATION strict-sparse
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE when DATE "yyyy-MM-dd'T'HH:mm:ss"
+    @DATA
+    {0 1}
+    """
+    @test_throws ErrorException ARFFFiles.load(NamedTuple, IOBuffer(strict_sparse); missingcols=false)
+
+    # sparse row missing closing brace
+    unclosed_sparse = """
+    @RELATION broken
+    @ATTRIBUTE num NUMERIC
+    @DATA
+    {0 1
+    """
+    @test_throws ErrorException ARFFFiles.load(NamedTuple, IOBuffer(unclosed_sparse))
+
+    # unsupported column type in header
+    struct DummyType <: ARFFFiles.ARFFType end
+    header = ARFFFiles.ARFFHeader("dummy", [ARFFFiles.ARFFAttribute("x", DummyType())])
+    @test_throws ErrorException ARFFFiles.loadstreaming(IOBuffer(""), header=header)
+end
+
+@testitem "sparse zero fill" begin
+    using CategoricalArrays
+    using Tables
+
+    arff = """
+    @RELATION fill
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE str STRING
+    @ATTRIBUTE cat {foo,bar}
+    @DATA
+    {0 1.0}
+    % inline comment to cover skip loop
+    {0 2.0,1 'hi',2 bar}
+    """
+
+    logbuf = IOBuffer()
+    logger = Base.CoreLogging.SimpleLogger(logbuf, Base.CoreLogging.Warn)
+    table = Base.CoreLogging.with_logger(logger) do
+        ARFFFiles.load(NamedTuple, IOBuffer(arff))
+    end
+    @test occursin("Value of string column 'str'", String(take!(logbuf)))
+    @test table.num == [1.0, 2.0]
+    @test table.str == ["", "hi"]
+    cats = table.cat
+    @test cats isa CategoricalArray{String,1,UInt32}
+    @test cats[1] == "foo"
+    @test cats[2] == "bar"
+    @test Tables.schema(table).names == (:num, :str, :cat)
+end
+
+@testitem "sparse non-missable date errors" begin
+    arff = """
+    @RELATION missing-date
+    @ATTRIBUTE num NUMERIC
+    @ATTRIBUTE when DATE "yyyy-MM-dd"
+    @DATA
+    {0 1.0}
+    """
+    err = try
+        ARFFFiles.load(NamedTuple, IOBuffer(arff))
+        nothing
+    catch ex
+        ex
+    end
+    @test err !== nothing
+    message = sprint(showerror, err)
+    @test occursin("Value of non-numeric column 'when'", message)
+end
+
+@testitem "readcolumns guard rails" begin
+    using ARFFFiles
+    using Dates
+
+    reader = ARFFFiles.loadstreaming(IOBuffer("""
+    @RELATION bogus
+    @ATTRIBUTE good NUMERIC
+    @DATA
+    1
+    """))
+    reader.colkinds[1] = :Z
+    @test_throws ErrorException ARFFFiles.readcolumns(reader)
+
+    sparse = """
+    @RELATION tiny
+    @ATTRIBUTE value NUMERIC
+    @DATA
+    {0 1.0}
+    """
+    legit = ARFFFiles.loadstreaming(IOBuffer(sparse))
+    chunk = collect(codeunits("1"))
+    opts = ARFFFiles.Parsing.options('\'')
+    @test_throws ErrorException ARFFFiles._readcolumns_readdatum(
+        legit,
+        Val(:Z),
+        chunk,
+        1,
+        length(chunk),
+        0,
+        1,
+        false,
+        1,
+        1,
+        opts,
+        opts,
+        Float64[],
+        nothing,
+    )
+end
