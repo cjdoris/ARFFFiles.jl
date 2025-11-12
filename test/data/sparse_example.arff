@@ -1,0 +1,12 @@
+% test data file
+
+@RELATION 'sparse-example'
+
+@ATTRIBUTE 'num1' NUMERIC
+@ATTRIBUTE 'str1' STRING
+@ATTRIBUTE 'cat1' {yes,no}
+
+@DATA
+{0 1.5,1 'foo',2 'yes'}
+{1 'bar'}
+{0 3.0,2 'no'}

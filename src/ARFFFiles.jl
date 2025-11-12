@@ -1025,7 +1025,10 @@ end
         elseif kind == :R || kind == :RX
             str = Parsing.get_parsed_string(chunk, res)
             r2 = info
-            r2.io = IOBuffer(str)
+            r2.io = IOBuffer(String(str))
+            r2.chunk = ARFFTable(_schema([], []), Dict())
+            r2.chunklen = 0
+            r2.chunkidx = 0
             push!(col, readcolumns(r2))
         else
             error()

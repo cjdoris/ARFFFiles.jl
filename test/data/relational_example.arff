@@ -1,0 +1,15 @@
+% test data file
+
+@RELATION 'relational-example'
+
+@ATTRIBUTE 'id' NUMERIC
+@ATTRIBUTE 'measurements' RELATIONAL
+    @ATTRIBUTE 'temp' NUMERIC
+    @ATTRIBUTE 'flag' STRING
+@END 'measurements'
+@ATTRIBUTE 'label' {yes,no}
+
+@DATA
+1,'1.0,hot\n2.0,cold','yes'
+2,'3.0,warm','no'
+3,'',?
