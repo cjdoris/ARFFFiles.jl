@@ -1,0 +1,14 @@
+% test data file
+
+@RELATION 'test-data'
+
+@ATTRIBUTE 'nums' NUMERIC
+@ATTRIBUTE 'ints' NUMERIC
+@ATTRIBUTE 'strs' STRING
+@ATTRIBUTE 'cats' {'a','b','c'}
+@ATTRIBUTE 'dates' DATE "yyyy-MM-dd'T'HH:mm:ss.SSS"
+
+@DATA
+1.5,1,'foo','a','2020-01-02T00:00:00.000'
+2.5,2,'bar','c','2021-03-04T00:00:00.000'
+3.5,3,'baz','b','2022-04-05T00:00:00.000'
