@@ -255,7 +255,7 @@ function parse_type(data, pos, len, offset, opts1, opts2)
                 pos, fmt = parse_string(data, pos, len, offset, opts1, opts2)
                 return pos, ARFFDateType(fmt)
             else
-                return pos, ARFFDateType(fmt)
+                return pos, ARFFDateType()
             end
         elseif lstr == "relational"
             return pos, ARFFRelationalType()
@@ -406,7 +406,7 @@ function parse_javadateformat(java::AbstractString)
             write(io, c)
         end
     end
-    quoted && error("unclosed quote in date format: $(repr(arff))")
+    quoted && error("unclosed quote in date format: $(repr(java))")
     return DateFormat(String(take!(io)))
 end
 

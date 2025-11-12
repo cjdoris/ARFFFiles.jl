@@ -46,3 +46,37 @@
         @test String(take!(io)) == expected
     end
 end
+
+@testitem "save edge cases" begin
+    using CategoricalArrays
+
+    io = IOBuffer()
+    ARFFFiles.write_datum(io, SubString("quoted", 1, 6))
+    @test String(take!(io)) == "'quoted'"
+
+    struct UInt8String <: AbstractString
+        data::Vector{UInt8}
+    end
+    Base.eltype(::Type{UInt8String}) = UInt8
+    Base.convert(::Type{String}, s::UInt8String) = String(s.data)
+    Base.String(s::UInt8String) = convert(String, s)
+    custom = UInt8String(codeunits("custom"))
+    io = IOBuffer()
+    ARFFFiles.write_datum(io, custom)
+    @test String(take!(io)) == "'custom'"
+
+    missing_only = (allmissing = [missing, missing],)
+    io = IOBuffer()
+    ARFFFiles.save(io, missing_only, relation = "missing", comment = "")
+    text = String(take!(io))
+    @test occursin("@ATTRIBUTE 'allmissing' {}", text)
+
+    cat_missing = (cats = CategoricalArray([missing, missing], levels = String[]),)
+    io = IOBuffer()
+    ARFFFiles.save(io, cat_missing, relation = "cats", comment = "")
+    text = String(take!(io))
+    @test occursin("@ATTRIBUTE 'cats' {}", text)
+
+    unsupported = (bad = ComplexF64[1 + 1im],)
+    @test_throws ErrorException ARFFFiles.save(IOBuffer(), unsupported, relation = "bad", comment = "")
+end
