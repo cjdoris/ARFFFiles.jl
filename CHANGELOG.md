@@ -1,10 +1,8 @@
 # Changelog
 
-## 1.5.2 (2025-11-13)
-* Bug fixes.
-
-## 1.5.1 (2024-10-24)
+## 1.5.1 (2024-11-13)
 * Fix bug saving `NaN`.
+* Bug fixes.
 
 ## 1.5.0 (2024-10-24)
 * Can now load files with relational fields.
