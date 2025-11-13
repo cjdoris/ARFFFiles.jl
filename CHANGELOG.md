@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.2 (2025-11-13)
+* Bug fixes.
+
 ## 1.5.1 (2024-10-24)
 * Fix bug saving `NaN`.
 
