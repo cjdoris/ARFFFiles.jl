@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 (2024-11-13)
+## 1.6.0 (2025-11-13)
 * Min supported Julia now 1.10.
 * Fix bug saving `NaN`.
 * Bug fixes.
