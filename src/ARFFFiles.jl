@@ -1016,11 +1016,10 @@ end
             push!(col, str)
         elseif kind == :C || kind == :CX
             str = Parsing.get_parsed_string(chunk, res)
-            pool = info
-            if haskey(pool.invindex, str)
-                push!(col.refs, get(pool, str))
+            if str in levels(col)
+                push!(col, str)
             else
-                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, levels(pool)), ", ", " or "))")
+                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, levels(col)), ", ", " or ")))")
             end
         elseif kind == :R || kind == :RX
             str = Parsing.get_parsed_string(chunk, res)
