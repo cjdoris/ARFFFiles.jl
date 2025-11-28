@@ -123,7 +123,7 @@ end
             @test typeof(df[k]) == typeof(case.df[k])
             @test isequal(df[k], case.df[k])
             if case.df[k] isa CategoricalArray
-                @test df[k].pool.levels == case.df[k].pool.levels
+                @test levels(df[k]) == levels(case.df[k])
             end
         end
         @test isequal(df, case.df)
