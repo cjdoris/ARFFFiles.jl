@@ -413,7 +413,7 @@ end
 const CatVal = eltype(CategoricalVector{String,UInt32}(undef, 0))
 const CatVec = typeof(CategoricalVector{String,UInt32}(undef, 0))
 const CatMissVec = typeof(CategoricalVector{Union{Missing,String},UInt32}(undef, 0))
-const CatPool = typeof(CategoricalVector{String,UInt32}(undef, 0).pool)
+const CatPool = CategoricalPool{String,UInt32}
 
 """
     ARFFReader
@@ -1020,7 +1020,7 @@ end
             if haskey(pool.invindex, str)
                 push!(col.refs, get(pool, str))
             else
-                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, pool.levels), ", ", " or "))")
+                error("Invalid nominal $(repr(str)) in column '$(r.colnames[i])' of row $nrows, expecting one of $(join(map(repr, levels(pool)), ", ", " or "))")
             end
         elseif kind == :R || kind == :RX
             str = Parsing.get_parsed_string(chunk, res)
@@ -1044,7 +1044,7 @@ function _zero(::AbstractVector{<:Union{<:AbstractString,Missing}}, r, i, nrows)
     ""
 end
 function _zero(::CategoricalVector, r, i, nrows)
-    r.pools[r.colkindidxs[i]][1]
+    levels(r.pools[r.colkindidxs[i]])[1]
 end
 @inline function _readcolumns_pushzero(r, i, col, nrows, avail)
     n = length(col)
@@ -1111,7 +1111,7 @@ write_datum(io::IO, x::Integer) = write_datum(io, convert(BigInt, x))
 write_datum(io::IO, x::Real) = write_datum(io, convert(BigFloat, x))
 write_datum(io::IO, x::DateTime) = write_datum(io, Dates.format(x, dateformat"YYYY-mm-dd\THH:MM:SS.sss"))
 write_datum(io::IO, x::Date) = write_datum(io, DateTime(x))
-write_datum(io::IO, x::CategoricalValue{<:AbstractString}) = write_datum(io, x.pool.levels[x.ref])
+write_datum(io::IO, x::CategoricalValue{<:AbstractString}) = write_datum(io, String(x))
 write_datum(io::IO, ::Missing) = write(io, "?")
 
 @generated function write_data(io::IO, rows, ::Val{N}) where {N}
@@ -1170,17 +1170,17 @@ function save(io::IO, df;
             println(io, "DATE \"yyyy-MM-dd'T'HH:mm:ss.SSS\"")
         elseif type <: Union{<:CategoricalValue{<:AbstractString},Missing}
             # find the levels of the first non-missing entry
-            levels = nothing
+            collevels = nothing
             for x in Tables.getcolumn(Tables.columns(df), name)
                 if x !== missing
-                    levels = x.pool.levels
+                    collevels = levels(x)
                     break
                 end
             end
-            if levels === nothing || isempty(levels)
+            if collevels === nothing || isempty(collevels)
                 println(io, "{}")
             else
-                for (i, level) in enumerate(levels)
+                for (i, level) in enumerate(collevels)
                     print(io, i == 1 ? "{" : ",")
                     write_datum(io, level)
                 end
